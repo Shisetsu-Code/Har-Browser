@@ -94,6 +94,16 @@ class HarArchiveManager {
       }
     }
 
+    if (
+      this.state.running &&
+      this._nextPendingIndex() < 0
+    ) {
+      this.state.running = false;
+      this.state.currentUrl = '';
+      this.state.currentIndex = -1;
+      await this._persist();
+    }
+
     this.onUpdate();
     return this.getState();
   }

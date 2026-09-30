@@ -92,3 +92,8 @@ Each tab keeps its own settings:
 - **GAME ONLY**: enabled by default. The browser still observes the full network stream, but the saved HAR removes asset traffic and CORS OPTIONS noise and keeps API/protocol traffic such as XHR, fetch, WebSocket and POST requests.
 
 Switch **GAME ONLY** to **FULL HAR** before saving when you need every resource request.
+
+
+## Resident background tabs
+
+HAR Browser keeps every opened game tab attached to the same BrowserWindow instead of removing inactive WebContentsViews. Switching tabs only raises the selected view to the top. This is intentional: background games remain resident, visible to Chromium, unthrottled, and continue running while another tab is selected. This uses more CPU/GPU than a normal browser because all game tabs are allowed to render continuously.

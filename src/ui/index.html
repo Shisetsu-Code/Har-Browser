@@ -11,30 +11,23 @@
   <header id="chrome">
     <div class="tabs-row">
       <div id="tabs" class="tabs"></div>
-      <button id="newTab" class="icon-button" title="New tab (Ctrl+T)">+</button>
+      <button id="newTab" class="tab-action" title="New tab (Ctrl+T)">+</button>
+      <button id="record" class="capture-button" title="Start HAR capture">REC</button>
+      <button id="stopSave" class="save-button" disabled title="Stop capture and save HAR">STOP+SAVE HAR</button>
     </div>
 
     <div class="toolbar">
-      <button id="back" class="icon-button" title="Back">←</button>
-      <button id="forward" class="icon-button" title="Forward">→</button>
-      <button id="reload" class="icon-button" title="Reload">↻</button>
-      <input id="address" class="address" autocomplete="off" spellcheck="false" placeholder="Paste game URL">
-      <button id="go">Go</button>
-      <button id="keepActive" class="active-mode" title="Prevent background throttling and visibility pauses">ACTIVE</button>
-      <select id="speed" title="Accelerate page timers and animations">
+      <button id="back" class="nav-button" title="Back">←</button>
+      <button id="forward" class="nav-button" title="Forward">→</button>
+      <button id="reload" class="nav-button" title="Reload">↻</button>
+      <input id="address" class="address" autocomplete="off" spellcheck="false" placeholder="Game URL">
+      <button id="go" class="go-button" title="Open URL">↵</button>
+      <select id="speed" title="Runtime speed">
         <option value="1">1×</option>
         <option value="2">2×</option>
         <option value="4">4×</option>
         <option value="8">8×</option>
       </select>
-      <button id="mute" class="active-mode" title="Mute this tab">MUTED</button>
-      <button id="gameOnly" class="active-mode" title="Export only API/game protocol traffic">GAME ONLY</button>
-      <button id="record">REC</button>
-      <button id="recordReload" title="Start a fresh capture, then reload ignoring cache">REC + RELOAD</button>
-      <button id="stopSave" disabled>STOP + SAVE HAR</button>
-    </div>
-
-    <div class="status-row">
       <span id="status">Ready</span>
       <span id="stats"></span>
     </div>

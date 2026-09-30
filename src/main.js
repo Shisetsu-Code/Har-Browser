@@ -632,29 +632,39 @@ function createImportTab() {
   importTabId = id;
   tabs.set(id, tab);
 
-  view.webContents.setBackgroundThrottling(false);
-  wireShortcutCapture(view.webContents);
+  const wc = getWebContents(view);
 
-  view.webContents.setWindowOpenHandler(
+  if (!isWebContentsAlive(wc)) {
+    tabs.delete(id);
+    importTabId = null;
+    return null;
+  }
+
+  wc.setBackgroundThrottling(false);
+  wireShortcutCapture(wc);
+
+  wc.setWindowOpenHandler(
     () => ({ action: 'deny' })
   );
 
-  view.webContents.on(
+  wc.on(
     'did-finish-load',
     notifyImportState
   );
 
   attachBackgroundView(tab);
 
-  view.webContents
-    .loadFile(
-      path.join(
-        __dirname,
-        'import',
-        'index.html'
-      )
-    )
-    .catch(() => {});
+  runDetached(
+    () =>
+      wc.loadFile(
+        path.join(
+          __dirname,
+          'import',
+          'index.html'
+        )
+      ),
+    'load import page'
+  );
 
   scheduleState();
   return tab;
@@ -813,10 +823,15 @@ async function setKeepActive(
 
   tab.keepActive = Boolean(enabled);
 
-  tab.view.webContents
-    .setBackgroundThrottling(
-      !tab.keepActive
-    );
+  const wc = getWebContents(tab.view);
+
+  if (!isWebContentsAlive(wc)) {
+    return false;
+  }
+
+  wc.setBackgroundThrottling(
+    !tab.keepActive
+  );
 
   await applyTabRuntime(tab);
   scheduleState();
@@ -1178,7 +1193,13 @@ function registerIpc() {
       tab.url =
         normalizeUrl(payload?.url);
 
-      await tab.view.webContents
+      const wc = getWebContents(tab.view);
+
+      if (!isWebContentsAlive(wc)) {
+        return false;
+      }
+
+      await wc
         .loadURL(tab.url)
         .catch(() => {});
 
@@ -1189,16 +1210,14 @@ function registerIpc() {
 
   ipcMain.handle('tab:back', () => {
     const tab = activeTab();
+    const wc = tab ? getWebContents(tab.view) : null;
 
     if (
       tab?.kind === 'game' &&
-      tab.view.webContents
-        .navigationHistory
-        .canGoBack()
+      isWebContentsAlive(wc) &&
+      wc.navigationHistory.canGoBack()
     ) {
-      tab.view.webContents
-        .navigationHistory
-        .goBack();
+      wc.navigationHistory.goBack();
     }
   });
 
@@ -1206,16 +1225,14 @@ function registerIpc() {
     'tab:forward',
     () => {
       const tab = activeTab();
+      const wc = tab ? getWebContents(tab.view) : null;
 
       if (
         tab?.kind === 'game' &&
-        tab.view.webContents
-          .navigationHistory
-          .canGoForward()
+        isWebContentsAlive(wc) &&
+        wc.navigationHistory.canGoForward()
       ) {
-        tab.view.webContents
-          .navigationHistory
-          .goForward();
+        wc.navigationHistory.goForward();
       }
     }
   );
@@ -1232,11 +1249,16 @@ function registerIpc() {
         return;
       }
 
+      const wc = getWebContents(tab.view);
+
+      if (!isWebContentsAlive(wc)) {
+        return;
+      }
+
       if (payload?.ignoreCache) {
-        tab.view.webContents
-          .reloadIgnoringCache();
+        wc.reloadIgnoringCache();
       } else {
-        tab.view.webContents.reload();
+        wc.reload();
       }
     }
   );
@@ -1308,8 +1330,11 @@ function registerIpc() {
 
       tab.muted = !tab.muted;
 
-      tab.view.webContents
-        .setAudioMuted(tab.muted);
+      const wc = getWebContents(tab.view);
+
+      if (isWebContentsAlive(wc)) {
+        wc.setAudioMuted(tab.muted);
+      }
 
       scheduleState();
       return tab.muted;
@@ -1474,8 +1499,11 @@ function createWindow() {
     importQueue.running = false;
 
     for (const tab of tabs.values()) {
+      const wc = getWebContents(tab.view);
+      if (!isWebContentsAlive(wc)) continue;
+
       try {
-        tab.view.webContents.close();
+        wc.close();
       } catch {}
     }
 

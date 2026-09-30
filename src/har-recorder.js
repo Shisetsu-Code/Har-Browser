@@ -1,6 +1,11 @@
 'use strict';
 
 const TEXTUAL_TYPES = new Set(['Document', 'XHR', 'Fetch', 'Other']);
+const PROTOCOL_BODY_LIMIT = 64 * 1024 * 1024;
+const FULL_HAR_BODY_LIMIT = 32 * 1024 * 1024;
+const CDP_TOTAL_BUFFER = 512 * 1024 * 1024;
+const CDP_RESOURCE_BUFFER = 128 * 1024 * 1024;
+const CDP_POST_BUFFER = 64 * 1024 * 1024;
 
 function headersToArray(headers = {}) {
   const result = [];
@@ -204,7 +209,11 @@ class HarRecorder {
     this.webContents = webContents;
     this.networkTap = options.networkTap || null;
     this.gameOnly = options.gameOnly !== false;
-    this.maxBodyBytes = options.maxBodyBytes ?? 8 * 1024 * 1024;
+    this.maxBodyBytes = options.maxBodyBytes ?? FULL_HAR_BODY_LIMIT;
+    this.maxProtocolBodyBytes =
+      options.maxProtocolBodyBytes ?? PROTOCOL_BODY_LIMIT;
+    this.stopDrainMs = options.stopDrainMs ?? 1500;
+    this.quietWindowMs = options.quietWindowMs ?? 200;
     this.onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
     this._messageListener = (_event, method, params, sessionId) =>
       this._onMessage(method, params, sessionId);
@@ -236,6 +245,8 @@ class HarRecorder {
     this.cdpAvailable = false;
     this.cdpError = null;
     this.ownsDebugger = false;
+    this.stopping = false;
+    this.lastNetworkEventAt = 0;
   }
 
   setGameOnly(enabled) {
@@ -280,9 +291,9 @@ class HarRecorder {
     const dbg = this.webContents.debugger;
 
     await dbg.sendCommand('Network.enable', {
-      maxTotalBufferSize: 100 * 1024 * 1024,
-      maxResourceBufferSize: 16 * 1024 * 1024,
-      maxPostDataSize: 8 * 1024 * 1024
+      maxTotalBufferSize: CDP_TOTAL_BUFFER,
+      maxResourceBufferSize: CDP_RESOURCE_BUFFER,
+      maxPostDataSize: CDP_POST_BUFFER
     });
 
     this.cdpAvailable = true;
@@ -302,14 +313,33 @@ class HarRecorder {
 
   async stop() {
     if (!this.startedAt) return this.toJSON();
+    if (this.stopping) {
+      await this._waitForPendingBodies();
+      return this.toJSON();
+    }
+
+    this.stopping = true;
+
+    // Keep listening briefly so loadingFinished + getResponseBody can arrive
+    // after the server response but before the HAR is frozen.
+    await this._waitForNetworkQuiet();
 
     this.recording = false;
     this.networkTap?.unregister(this.webContents.id, this);
 
-    await Promise.allSettled([...this.pendingBodies]);
+    await this._waitForPendingBodies();
 
-    for (const record of [...this.active.values()]) this._finalize(record);
-    for (const record of [...this.webActive.values()]) this._finalizeWeb(record);
+    for (const record of [...this.active.values()]) {
+      if (isGameOnlyEntry(record) && record.response?.content?.text === undefined) {
+        record.response.content._bodyCaptureStatus =
+          record.response.content._bodyCaptureStatus || 'missing-before-stop';
+      }
+      this._finalize(record);
+    }
+
+    for (const record of [...this.webActive.values()]) {
+      this._finalizeWeb(record);
+    }
 
     const dbg = this.webContents.debugger;
 
@@ -328,8 +358,41 @@ class HarRecorder {
     }
 
     this.cdpAvailable = false;
+    this.stopping = false;
     this.onUpdate();
     return this.toJSON();
+  }
+
+  async _waitForPendingBodies() {
+    for (let pass = 0; pass < 4; pass += 1) {
+      const pending = [...this.pendingBodies];
+      if (!pending.length) return;
+      await Promise.allSettled(pending);
+    }
+  }
+
+  async _waitForNetworkQuiet() {
+    const deadline = Date.now() + this.stopDrainMs;
+
+    while (Date.now() < deadline) {
+      const quietFor =
+        Date.now() - (this.lastNetworkEventAt || Date.now());
+
+      const protocolActive =
+        [...this.active.values()].some(isGameOnlyEntry);
+
+      if (
+        quietFor >= this.quietWindowMs &&
+        !protocolActive &&
+        this.pendingBodies.size === 0
+      ) {
+        return;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, 25)
+      );
+    }
   }
 
   getStats() {
@@ -363,7 +426,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.3.0'
+          version: '0.5.1'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),
@@ -437,6 +500,7 @@ class HarRecorder {
 
   handleWebRequest(stage, details) {
     if (!this.recording) return;
+    this.lastNetworkEventAt = Date.now();
     this.webEvents += 1;
 
     switch (stage) {
@@ -612,6 +676,7 @@ class HarRecorder {
 
   _onMessage(method, params, sessionId) {
     if (!this.recording) return;
+    this.lastNetworkEventAt = Date.now();
     this.cdpEvents += 1;
 
     if (method === 'Target.attachedToTarget') {
@@ -620,9 +685,9 @@ class HarRecorder {
         void this.webContents.debugger.sendCommand(
           'Network.enable',
           {
-            maxTotalBufferSize: 100 * 1024 * 1024,
-            maxResourceBufferSize: 16 * 1024 * 1024,
-            maxPostDataSize: 8 * 1024 * 1024
+            maxTotalBufferSize: CDP_TOTAL_BUFFER,
+            maxResourceBufferSize: CDP_RESOURCE_BUFFER,
+            maxPostDataSize: CDP_POST_BUFFER
           },
           childSessionId
         ).catch(() => {});

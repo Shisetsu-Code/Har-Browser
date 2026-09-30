@@ -20,6 +20,10 @@ class RuntimeController {
     };
   }
 
+  getSessionIds() {
+    return [...this.sessions];
+  }
+
   _state() {
     const state = this.getState?.() || {};
     return {

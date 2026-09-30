@@ -13,6 +13,8 @@ const {
 } = require('electron');
 const { HarRecorder } = require('./har-recorder');
 const { NetworkTap } = require('./network-tap');
+const { RuntimeController } = require('./runtime-controller');
+const { buildRuntimePatch } = require('./runtime-patch');
 
 const TOOLBAR_HEIGHT = 104;
 const PARTITION = 'persist:har-browser';
@@ -59,6 +61,8 @@ function serializeTab(tab) {
     speed: tab.speed,
     muted: tab.muted,
     gameOnly: tab.gameOnly,
+    runtimeFrames: tab.runtimeFrames || 0,
+    runtimeTargets: tab.runtimeController?.lastAppliedTargets || 0,
     stats: tab.recorder?.getStats() || {
       recording: false,
       requests: 0,
@@ -101,13 +105,52 @@ function layoutActiveTab() {
   });
 }
 
-function applyTabRuntime(tab) {
+async function injectFrameRuntime(tab, frame) {
+  if (!frame || frame.isDestroyed?.()) return false;
+
+  try {
+    await frame.executeJavaScript(buildRuntimePatch(tab.speed, tab.keepActive), true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function applyRuntimeToFrames(tab) {
   const wc = tab.view.webContents;
-  if (wc.isDestroyed()) return;
+  if (wc.isDestroyed()) return 0;
+
+  let frames = [];
+  try {
+    frames = wc.mainFrame?.framesInSubtree || [];
+  } catch {}
+
+  let applied = 0;
+  for (const frame of frames) {
+    if (await injectFrameRuntime(tab, frame)) applied += 1;
+  }
+
+  tab.runtimeFrames = applied;
+  scheduleState();
+  return applied;
+}
+
+async function applyTabRuntime(tab) {
+  const wc = tab.view.webContents;
+  if (wc.isDestroyed()) return { frames: 0, targets: 0 };
 
   wc.setAudioMuted(tab.muted);
+
+  // Preload IPC remains a fast path for the top frame.
   wc.send('har-browser:set-speed', tab.speed);
   wc.send('har-browser:set-keep-active', tab.keepActive);
+
+  const [frames, targets] = await Promise.all([
+    applyRuntimeToFrames(tab),
+    tab.runtimeController?.refresh?.() || Promise.resolve(0)
+  ]);
+
+  return { frames, targets };
 }
 
 function normalizeSpeed(value) {
@@ -138,9 +181,33 @@ function wireTabEvents(tab) {
 
   wc.on('did-navigate', syncUrl);
   wc.on('did-navigate-in-page', syncUrl);
+
+  wc.on('frame-created', (_event, details) => {
+    const frame = details?.frame;
+    if (!frame) return;
+
+    const apply = () => {
+      void injectFrameRuntime(tab, frame).then((ok) => {
+        if (ok) {
+          try {
+            tab.runtimeFrames = wc.mainFrame?.framesInSubtree?.length || tab.runtimeFrames || 1;
+          } catch {}
+          scheduleState();
+        }
+      });
+    };
+
+    frame.on?.('dom-ready', apply);
+    apply();
+  });
+
+  wc.on('did-frame-navigate', () => {
+    void applyRuntimeToFrames(tab);
+  });
+
   wc.on('did-finish-load', () => {
     syncUrl();
-    applyTabRuntime(tab);
+    void applyTabRuntime(tab);
   });
   wc.on('render-process-gone', (_event, details) => {
     tab.title = `Crashed: ${details.reason}`;
@@ -173,13 +240,31 @@ function createTab(url = 'about:blank') {
     keepActive: true,
     speed: 1,
     muted: true,
-    gameOnly: true
+    gameOnly: true,
+    runtimeFrames: 0,
+    runtimeController: null
   };
 
   tabs.set(id, tab);
   wireTabEvents(tab);
+
+  tab.runtimeController = new RuntimeController(
+    view.webContents,
+    () => ({ speed: tab.speed, keepActive: tab.keepActive }),
+    scheduleState
+  );
+
   activateTab(id);
-  view.webContents.loadURL(tab.url).catch(() => {});
+
+  // Install the document-start runtime before the remote page begins loading.
+  void tab.runtimeController.start()
+    .catch(() => {})
+    .finally(() => {
+      if (!view.webContents.isDestroyed()) {
+        view.webContents.loadURL(tab.url).catch(() => {});
+      }
+    });
+
   scheduleState();
   return tab;
 }
@@ -212,6 +297,8 @@ async function closeTab(id) {
     await tab.recorder.stop();
   }
 
+  await tab.runtimeController?.stop?.();
+
   if (activeTabId === numericId) {
     try {
       mainWindow.contentView.removeChildView(tab.view);
@@ -239,11 +326,7 @@ function activeTab() {
 async function setKeepActive(tab, enabled) {
   tab.keepActive = Boolean(enabled);
   tab.view.webContents.setBackgroundThrottling(!tab.keepActive ? true : false);
-  tab.view.webContents.send('har-browser:set-keep-active', tab.keepActive);
-  await tab.view.webContents.executeJavaScript(
-    `window.__HAR_BROWSER_KEEP_ACTIVE__ = ${tab.keepActive ? 'true' : 'false'};`,
-    true
-  ).catch(() => {});
+  await applyTabRuntime(tab);
   scheduleState();
 }
 
@@ -339,13 +422,19 @@ function registerIpc() {
     return tab.keepActive;
   });
 
-  ipcMain.handle('tab:set-speed', (_event, payload) => {
+  ipcMain.handle('tab:set-speed', async (_event, payload) => {
     const tab = activeTab();
-    if (!tab) return 1;
+    if (!tab) return { speed: 1, frames: 0, targets: 0 };
+
     tab.speed = normalizeSpeed(payload?.speed);
-    tab.view.webContents.send('har-browser:set-speed', tab.speed);
+    const applied = await applyTabRuntime(tab);
     scheduleState();
-    return tab.speed;
+
+    return {
+      speed: tab.speed,
+      frames: applied.frames,
+      targets: applied.targets
+    };
   });
 
   ipcMain.handle('tab:toggle-mute', () => {

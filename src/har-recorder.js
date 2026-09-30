@@ -68,6 +68,28 @@ function isGameOnlyEntry(entry) {
   return false;
 }
 
+function isBodylessResponse(entry) {
+  const method = String(entry?.request?.method || 'GET').toUpperCase();
+  const status = Number(entry?.response?.status || 0);
+
+  return (
+    method === 'HEAD' ||
+    status === 204 ||
+    status === 205 ||
+    status === 304
+  );
+}
+
+function bodyCaptureLimit(entry, gameOnly, maxBodyBytes, maxProtocolBodyBytes) {
+  if (isGameOnlyEntry(entry)) return maxProtocolBodyBytes;
+  if (gameOnly) return 0;
+
+  const url = String(entry?.request?.url || '');
+  if (url.startsWith('blob:') || url.startsWith('data:')) return 0;
+
+  return maxBodyBytes;
+}
+
 function entryTrafficBytes(entry) {
   const responseBytes = Number(entry?.response?.bodySize);
   const requestBytes = Number(entry?.request?.bodySize);
@@ -565,6 +587,11 @@ class HarRecorder {
         mimeType: '',
         text: postData
       };
+      entry.request._postDataCaptureStatus = 'captured-webRequest';
+    } else if (!['GET', 'HEAD'].includes(String(details.method || '').toUpperCase())) {
+      entry.request._postDataCaptureStatus = 'not-present-webRequest';
+    } else {
+      entry.request._postDataCaptureStatus = 'not-applicable';
     }
 
     this.webActive.set(id, entry);
@@ -669,6 +696,14 @@ class HarRecorder {
 
     if (this.webActive.get(entry.__requestId) === entry) {
       this.webActive.delete(entry.__requestId);
+    }
+
+    if (
+      isGameOnlyEntry(entry) &&
+      entry.response.content.text === undefined &&
+      !entry.response.content._bodyCaptureStatus
+    ) {
+      entry.response.content._bodyCaptureStatus = 'awaiting-cdp-merge';
     }
 
     this.webEntries.push(entry);
@@ -778,9 +813,22 @@ class HarRecorder {
 
     if (postData !== undefined) {
       entry.request.postData = {
-        mimeType: request.headers?.['Content-Type'] || request.headers?.['content-type'] || '',
+        mimeType: headerValue(request.headers, 'content-type') || '',
         text: postData
       };
+      entry.request._postDataCaptureStatus = 'captured-event';
+    } else if (
+      request.hasPostData === true ||
+      !['GET', 'HEAD'].includes(String(request.method || '').toUpperCase())
+    ) {
+      entry.request._postDataCaptureStatus = 'pending';
+      this._captureRequestPostData(
+        entry,
+        params.requestId,
+        sessionId
+      );
+    } else {
+      entry.request._postDataCaptureStatus = 'not-applicable';
     }
 
     this.active.set(key, entry);
@@ -819,33 +867,72 @@ class HarRecorder {
     if (!entry) return;
 
     entry.__endTs = params.timestamp;
+
     if (Number.isFinite(params.encodedDataLength)) {
       entry.response.bodySize = params.encodedDataLength;
       entry.response.content.size = params.encodedDataLength;
+
       if (this.webEntries.length === 0 && this.webActive.size === 0) {
         this.totalBytes += params.encodedDataLength;
       }
     }
 
-    if (!this._shouldCaptureBody(entry, params.encodedDataLength)) {
+    if (isBodylessResponse(entry)) {
+      entry.response.content._bodyCaptureStatus = 'not-applicable';
       this._finalize(entry);
       return;
     }
 
-    const promise = this.webContents.debugger
-      .sendCommand('Network.getResponseBody', { requestId: params.requestId }, sessionId)
+    const capture = this._bodyCaptureDecision(
+      entry,
+      params.encodedDataLength
+    );
+
+    if (!capture.capture) {
+      entry.response.content._bodyCaptureStatus = capture.status;
+      if (capture.limit > 0) {
+        entry.response.content._bodyCaptureLimit = capture.limit;
+      }
+      this._finalize(entry);
+      return;
+    }
+
+    entry.response.content._bodyCaptureStatus = 'pending';
+
+    const promise = this._getResponseBodyWithRetry(
+      params.requestId,
+      sessionId,
+      4
+    )
       .then((result) => {
-        if (!result || entry.__finalized) return;
-        entry.response.content.text = result.body;
-        if (result.base64Encoded) entry.response.content.encoding = 'base64';
+        if (!result) {
+          throw new Error('CDP returned no response body');
+        }
+
+        entry.response.content.text =
+          result.body ?? '';
+
+        if (result.base64Encoded) {
+          entry.response.content.encoding = 'base64';
+        }
+
+        entry.response.content._bodyCaptureStatus =
+          result.body === ''
+            ? 'empty'
+            : 'captured';
+
         if (!entry.response.content.size) {
-          entry.response.content.size = result.base64Encoded
-            ? Math.floor(result.body.length * 0.75)
-            : utf8Size(result.body);
+          entry.response.content.size =
+            result.base64Encoded
+              ? Math.floor((result.body || '').length * 0.75)
+              : utf8Size(result.body || '');
         }
       })
-      .catch(() => {
+      .catch((error) => {
         entry.response.content._bodyUnavailable = true;
+        entry.response.content._bodyCaptureStatus = 'unavailable';
+        entry.response.content._bodyCaptureError =
+          error?.message || String(error);
       })
       .finally(() => {
         this.pendingBodies.delete(promise);
@@ -855,10 +942,108 @@ class HarRecorder {
     this.pendingBodies.add(promise);
   }
 
-  _shouldCaptureBody(entry, encodedDataLength) {
-    if (!TEXTUAL_TYPES.has(entry.__resourceType)) return false;
-    if (Number.isFinite(encodedDataLength) && encodedDataLength > this.maxBodyBytes) return false;
-    return true;
+  _bodyCaptureDecision(entry, encodedDataLength) {
+    const limit = bodyCaptureLimit(
+      entry,
+      this.gameOnly,
+      this.maxBodyBytes,
+      this.maxProtocolBodyBytes
+    );
+
+    if (limit <= 0) {
+      return {
+        capture: false,
+        status: 'filtered',
+        limit
+      };
+    }
+
+    if (
+      Number.isFinite(encodedDataLength) &&
+      encodedDataLength > limit
+    ) {
+      return {
+        capture: false,
+        status: 'skipped-size-limit',
+        limit
+      };
+    }
+
+    return {
+      capture: true,
+      status: 'pending',
+      limit
+    };
+  }
+
+  async _getResponseBodyWithRetry(requestId, sessionId, attempts = 3) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.webContents.debugger.sendCommand(
+          'Network.getResponseBody',
+          { requestId },
+          sessionId
+        );
+      } catch (error) {
+        lastError = error;
+
+        if (attempt < attempts) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 20 * attempt)
+          );
+        }
+      }
+    }
+
+    throw lastError || new Error('Unable to capture response body');
+  }
+
+  _captureRequestPostData(entry, requestId, sessionId) {
+    const promise = this.webContents.debugger
+      .sendCommand(
+        'Network.getRequestPostData',
+        { requestId },
+        sessionId
+      )
+      .then((result) => {
+        const postData = result?.postData;
+
+        if (postData === undefined) {
+          entry.request._postDataCaptureStatus = 'unavailable';
+          return;
+        }
+
+        entry.request.postData = {
+          mimeType:
+            headerValue(
+              Object.fromEntries(
+                (entry.request.headers || []).map(
+                  ({ name, value }) => [name, value]
+                )
+              ),
+              'content-type'
+            ) || '',
+          text: postData
+        };
+
+        entry.request.bodySize = utf8Size(postData);
+        entry.request._postDataCaptureStatus =
+          postData === ''
+            ? 'empty'
+            : 'captured-cdp';
+      })
+      .catch((error) => {
+        entry.request._postDataCaptureStatus = 'unavailable';
+        entry.request._postDataCaptureError =
+          error?.message || String(error);
+      })
+      .finally(() => {
+        this.pendingBodies.delete(promise);
+      });
+
+    this.pendingBodies.add(promise);
   }
 
   _loadingFailed(params, sessionId) {
@@ -980,5 +1165,7 @@ module.exports = {
   normalizeResourceType,
   uploadDataToText,
   timestampToIso,
-  isGameOnlyEntry
+  isGameOnlyEntry,
+  isBodylessResponse,
+  bodyCaptureLimit
 };

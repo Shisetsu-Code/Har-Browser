@@ -7,20 +7,29 @@ const allowed = new Set([
   'import:choose-targets',
   'import:start',
   'import:pause',
-  'import:next-batch',
+  'import:load-one',
   'import:clear',
-  'import:set-batch-size'
+  'import:set-look-ahead'
 ]);
 
 contextBridge.exposeInMainWorld('targetImport', {
   invoke(channel, payload) {
-    if (!allowed.has(channel)) throw new Error(`IPC channel not allowed: ${channel}`);
+    if (!allowed.has(channel)) {
+      throw new Error(`IPC channel not allowed: ${channel}`);
+    }
+
     return ipcRenderer.invoke(channel, payload);
   },
 
   onState(callback) {
     const listener = (_event, state) => callback(state);
+
     ipcRenderer.on('import:state', listener);
-    return () => ipcRenderer.removeListener('import:state', listener);
+
+    return () =>
+      ipcRenderer.removeListener(
+        'import:state',
+        listener
+      );
   }
 });

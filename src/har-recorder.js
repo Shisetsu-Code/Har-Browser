@@ -352,6 +352,7 @@ class HarRecorder {
     delete copy.__endTs;
     delete copy.__finalized;
     delete copy.__resourceType;
+    delete copy.__cdpRequestId;
     delete copy.__startWallMs;
     delete copy.__responseWallMs;
     delete copy.__endWallMs;
@@ -597,42 +598,47 @@ class HarRecorder {
 
     switch (method) {
       case 'Network.requestWillBeSent':
-        this._requestWillBeSent(params);
+        this._requestWillBeSent(params, sessionId);
         break;
       case 'Network.responseReceived':
-        this._responseReceived(params);
+        this._responseReceived(params, sessionId);
         break;
       case 'Network.loadingFinished':
         this._loadingFinished(params, sessionId);
         break;
       case 'Network.loadingFailed':
-        this._loadingFailed(params);
+        this._loadingFailed(params, sessionId);
         break;
       case 'Network.webSocketCreated':
-        this._webSocketCreated(params);
+        this._webSocketCreated(params, sessionId);
         break;
       case 'Network.webSocketWillSendHandshakeRequest':
-        this._webSocketHandshakeRequest(params);
+        this._webSocketHandshakeRequest(params, sessionId);
         break;
       case 'Network.webSocketHandshakeResponseReceived':
-        this._webSocketHandshakeResponse(params);
+        this._webSocketHandshakeResponse(params, sessionId);
         break;
       case 'Network.webSocketFrameSent':
-        this._webSocketFrame(params, 'sent');
+        this._webSocketFrame(params, 'sent', sessionId);
         break;
       case 'Network.webSocketFrameReceived':
-        this._webSocketFrame(params, 'received');
+        this._webSocketFrame(params, 'received', sessionId);
         break;
       case 'Network.webSocketClosed':
-        this._webSocketClosed(params);
+        this._webSocketClosed(params, sessionId);
         break;
       default:
         break;
     }
   }
 
-  _requestWillBeSent(params) {
-    const previous = this.active.get(params.requestId);
+  _cdpKey(requestId, sessionId) {
+    return `${sessionId || 'root'}:${requestId}`;
+  }
+
+  _requestWillBeSent(params, sessionId) {
+    const key = this._cdpKey(params.requestId, sessionId);
+    const previous = this.active.get(key);
     if (previous && params.redirectResponse) {
       this._applyResponse(previous, params.redirectResponse, params.timestamp);
       previous.__endTs = params.timestamp;
@@ -660,7 +666,8 @@ class HarRecorder {
       response: responseTemplate(),
       cache: {},
       timings: timingsTemplate(),
-      __requestId: params.requestId,
+      __requestId: key,
+      __cdpRequestId: params.requestId,
       __startTs: params.timestamp,
       __responseTs: null,
       __endTs: null,
@@ -677,12 +684,12 @@ class HarRecorder {
       };
     }
 
-    this.active.set(params.requestId, entry);
+    this.active.set(key, entry);
     this.onUpdate();
   }
 
-  _responseReceived(params) {
-    const entry = this.active.get(params.requestId);
+  _responseReceived(params, sessionId) {
+    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
     if (!entry) return;
     this._applyResponse(entry, params.response, params.timestamp);
   }
@@ -709,7 +716,7 @@ class HarRecorder {
   }
 
   _loadingFinished(params, sessionId) {
-    const entry = this.active.get(params.requestId);
+    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
     if (!entry) return;
 
     entry.__endTs = params.timestamp;
@@ -755,8 +762,8 @@ class HarRecorder {
     return true;
   }
 
-  _loadingFailed(params) {
-    const entry = this.active.get(params.requestId);
+  _loadingFailed(params, sessionId) {
+    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
     if (!entry) return;
     entry.__endTs = params.timestamp;
     entry.response._error = params.errorText || 'Network request failed';
@@ -764,17 +771,19 @@ class HarRecorder {
     this._finalize(entry);
   }
 
-  _webSocketCreated(params) {
-    this.webSockets.set(params.requestId, {
+  _webSocketCreated(params, sessionId) {
+    const key = this._cdpKey(params.requestId, sessionId);
+    this.webSockets.set(key, {
       url: params.url,
       frames: []
     });
   }
 
-  _webSocketHandshakeRequest(params) {
-    let entry = this.active.get(params.requestId);
+  _webSocketHandshakeRequest(params, sessionId) {
+    const key = this._cdpKey(params.requestId, sessionId);
+    let entry = this.active.get(key);
     if (!entry) {
-      const url = this.webSockets.get(params.requestId)?.url || '';
+      const url = this.webSockets.get(key)?.url || '';
       entry = {
         pageref: 'page_1',
         startedDateTime: new Date().toISOString(),
@@ -792,7 +801,8 @@ class HarRecorder {
         response: responseTemplate(),
         cache: {},
         timings: timingsTemplate(),
-        __requestId: params.requestId,
+        __requestId: key,
+        __cdpRequestId: params.requestId,
         __startTs: params.timestamp,
         __responseTs: null,
         __endTs: null,
@@ -800,7 +810,7 @@ class HarRecorder {
         __finalized: false,
         __source: 'cdp'
       };
-      this.active.set(params.requestId, entry);
+      this.active.set(key, entry);
     }
 
     if (params.request?.headers) {
@@ -808,14 +818,14 @@ class HarRecorder {
     }
   }
 
-  _webSocketHandshakeResponse(params) {
-    const entry = this.active.get(params.requestId);
+  _webSocketHandshakeResponse(params, sessionId) {
+    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
     if (!entry) return;
     this._applyResponse(entry, params.response, params.timestamp);
   }
 
-  _webSocketFrame(params, direction) {
-    const ws = this.webSockets.get(params.requestId);
+  _webSocketFrame(params, direction, sessionId) {
+    const ws = this.webSockets.get(this._cdpKey(params.requestId, sessionId));
     if (!ws) return;
 
     const payloadData = params.response?.payloadData || '';
@@ -831,8 +841,8 @@ class HarRecorder {
     this.onUpdate();
   }
 
-  _webSocketClosed(params) {
-    const entry = this.active.get(params.requestId);
+  _webSocketClosed(params, sessionId) {
+    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
     if (!entry) return;
     entry.__endTs = params.timestamp;
     this._finalize(entry);

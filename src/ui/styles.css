@@ -86,7 +86,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -144,9 +145,27 @@ button:disabled {
 #record,
 #recordReload,
 #stopSave,
-#keepActive {
-  padding: 0 10px;
+#keepActive,
+#mute,
+#gameOnly {
+  padding: 0 8px;
   white-space: nowrap;
+}
+
+#speed {
+  height: 30px;
+  min-width: 58px;
+  border: 1px solid #3b424a;
+  border-radius: 5px;
+  background: #252a30;
+  color: #e7eaee;
+  padding: 0 5px;
+}
+
+#mute.active-mode,
+#gameOnly.active-mode {
+  border-color: #2f7a50;
+  background: #1d4b33;
 }
 
 #record,

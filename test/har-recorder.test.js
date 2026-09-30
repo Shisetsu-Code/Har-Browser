@@ -7,7 +7,8 @@ const {
   queryString,
   normalizeHttpVersion,
   normalizeResourceType,
-  uploadDataToText
+  uploadDataToText,
+  isGameOnlyEntry
 } = require('../src/har-recorder');
 
 test('headersToArray converts CDP headers to HAR headers', () => {
@@ -43,4 +44,32 @@ test('extracts raw POST bytes from Electron uploadData', () => {
     uploadDataToText([{ bytes: Buffer.from('command=spin&bet=1') }]),
     'command=spin&bet=1'
   );
+});
+
+
+test('GAME ONLY keeps protocol traffic and removes assets/preflight', () => {
+  assert.equal(isGameOnlyEntry({
+    __resourceType: 'XHR',
+    request: { method: 'GET', url: 'https://game.test/api/state' }
+  }), true);
+
+  assert.equal(isGameOnlyEntry({
+    __resourceType: 'Image',
+    request: { method: 'GET', url: 'https://game.test/assets/reel.webp' }
+  }), false);
+
+  assert.equal(isGameOnlyEntry({
+    __resourceType: 'Other',
+    request: { method: 'POST', url: 'https://game.test/api/spin' }
+  }), true);
+
+  assert.equal(isGameOnlyEntry({
+    __resourceType: 'XHR',
+    request: { method: 'OPTIONS', url: 'https://game.test/api/spin' }
+  }), false);
+
+  assert.equal(isGameOnlyEntry({
+    __resourceType: 'Media',
+    request: { method: 'GET', url: 'blob:https://game.test/audio-id' }
+  }), false);
 });

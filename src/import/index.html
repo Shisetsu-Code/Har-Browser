@@ -47,7 +47,42 @@
       </div>
 
       <div class="notes">
-        Prefetch starts games one at a time, about 700 ms apart. It keeps only 5–6 targets ahead of your current imported game. Each time you move forward through the game tabs, one more target is opened ahead so the queue follows your work instead of loading the whole catalog in batches.
+        Prefetch starts games one at a time, about 700 ms apart. It keeps only 5–6 targets ahead of your current imported game. Each time you move forward through the game tabs, one more target is opened ahead.
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="topline">
+        <div>
+          <h1>Persistent HAR archive</h1>
+          <p>Capture every target gradually, one game at a time, and keep progress across restarts.</p>
+        </div>
+        <button id="harFolder">OPEN HAR FOLDER</button>
+      </div>
+
+      <div class="controls">
+        <button id="harStart" class="primary">START / RESUME</button>
+        <button id="harPause">PAUSE</button>
+        <button id="harRetry">RETRY FAILED</button>
+        <button id="harReset">RESET PROGRESS</button>
+      </div>
+
+      <div class="metrics">
+        <div><strong id="harTotal">0</strong><span>Total</span></div>
+        <div><strong id="harCompleted">0</strong><span>Saved HARs</span></div>
+        <div><strong id="harRemaining">0</strong><span>Remaining</span></div>
+        <div><strong id="harFailed">0</strong><span>Failed</span></div>
+      </div>
+
+      <div class="status archive-status">
+        <span id="harState">Archive idle.</span>
+        <span id="harCurrent"></span>
+      </div>
+
+      <div id="harOutput" class="path"></div>
+
+      <div class="notes">
+        The archive uses a separate offscreen Chromium view and processes only one target at a time. Each HAR captures the initial page load plus a short settle period. Progress and completed files are persisted on disk, so an interrupted run can resume later.
       </div>
     </section>
   </main>

@@ -61,6 +61,31 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getWebContents(view) {
+  try {
+    return view?.webContents || null;
+  } catch {
+    return null;
+  }
+}
+
+function isWebContentsAlive(webContents) {
+  try {
+    return Boolean(webContents && !webContents.isDestroyed());
+  } catch {
+    return false;
+  }
+}
+
+function runDetached(promise, label = 'background task') {
+  Promise.resolve(promise).catch((error) => {
+    console.warn(
+      `[HAR Browser] ${label} failed:`,
+      error?.message || error
+    );
+  });
+}
+
 function normalizeUrl(input) {
   const value = String(input || '').trim();
   if (!value) return 'about:blank';
@@ -186,13 +211,13 @@ function getImportState() {
 
 function notifyImportState() {
   const tab = tabs.get(importTabId);
+  const wc = tab ? getWebContents(tab.view) : null;
 
-  if (!tab || tab.view.webContents.isDestroyed()) return;
+  if (!tab || !isWebContentsAlive(wc)) return;
 
-  tab.view.webContents.send(
-    'import:state',
-    getImportState()
-  );
+  try {
+    wc.send('import:state', getImportState());
+  } catch {}
 }
 
 function layoutTabs() {
@@ -257,8 +282,8 @@ async function injectFrameRuntime(tab, frame) {
 async function applyRuntimeToFrames(tab) {
   if (tab.kind !== 'game') return 0;
 
-  const wc = tab.view.webContents;
-  if (wc.isDestroyed()) return 0;
+  const wc = getWebContents(tab.view);
+  if (!isWebContentsAlive(wc)) return 0;
 
   let frames = [];
 
@@ -284,9 +309,9 @@ async function applyTabRuntime(tab) {
     return { frames: 0, targets: 0 };
   }
 
-  const wc = tab.view.webContents;
+  const wc = getWebContents(tab.view);
 
-  if (wc.isDestroyed()) {
+  if (!isWebContentsAlive(wc)) {
     return { frames: 0, targets: 0 };
   }
 
@@ -343,7 +368,8 @@ function wireShortcutCapture(webContents) {
 }
 
 function wireGameTabEvents(tab) {
-  const wc = tab.view.webContents;
+  const wc = getWebContents(tab.view);
+  if (!isWebContentsAlive(wc)) return;
 
   wc.setBackgroundThrottling(false);
   wc.setAudioMuted(tab.muted);
@@ -373,9 +399,9 @@ function wireGameTabEvents(tab) {
     if (!frame) return;
 
     const apply = () => {
-      void injectFrameRuntime(tab, frame).then(
-        (ok) => {
-          if (!ok) return;
+      runDetached(
+        injectFrameRuntime(tab, frame).then((ok) => {
+          if (!ok || !isWebContentsAlive(wc)) return;
 
           try {
             tab.runtimeFrames =
@@ -385,7 +411,8 @@ function wireGameTabEvents(tab) {
           } catch {}
 
           scheduleState();
-        }
+        }),
+        'frame runtime injection'
       );
     };
 
@@ -394,12 +421,18 @@ function wireGameTabEvents(tab) {
   });
 
   wc.on('did-frame-navigate', () => {
-    void applyRuntimeToFrames(tab);
+    runDetached(
+      applyRuntimeToFrames(tab),
+      'frame runtime refresh'
+    );
   });
 
   wc.on('did-finish-load', () => {
     syncUrl();
-    void applyTabRuntime(tab);
+    runDetached(
+      applyTabRuntime(tab),
+      'tab runtime refresh'
+    );
   });
 
   wc.on(
@@ -466,9 +499,16 @@ function createTab(
   tabs.set(id, tab);
   wireGameTabEvents(tab);
 
+  const wc = getWebContents(view);
+
+  if (!isWebContentsAlive(wc)) {
+    tabs.delete(id);
+    return null;
+  }
+
   tab.runtimeController =
     new RuntimeController(
-      view.webContents,
+      wc,
       () => ({
         speed: tab.speed,
         keepActive: tab.keepActive
@@ -482,16 +522,17 @@ function createTab(
     attachBackgroundView(tab);
   }
 
-  void tab.runtimeController
-    .start()
-    .catch(() => {})
-    .finally(() => {
-      if (!view.webContents.isDestroyed()) {
-        view.webContents
-          .loadURL(tab.url)
-          .catch(() => {});
-      }
-    });
+  // Navigation must never wait for CDP/runtime setup. The preload already
+  // installs the top-frame runtime; CDP attaches to child targets in parallel.
+  runDetached(
+    wc.loadURL(tab.url),
+    `load ${tab.url}`
+  );
+
+  runDetached(
+    tab.runtimeController.start(),
+    'runtime controller start'
+  );
 
   scheduleState();
   return tab;
@@ -657,7 +698,13 @@ async function closeTab(id) {
     );
   } catch {}
 
-  tab.view.webContents.close();
+  const wc = getWebContents(tab.view);
+  if (isWebContentsAlive(wc)) {
+    try {
+      wc.close();
+    } catch {}
+  }
+
   tabs.delete(numericId);
 
   if (activeTabId === numericId) {

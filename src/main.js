@@ -77,13 +77,25 @@ function isWebContentsAlive(webContents) {
   }
 }
 
-function runDetached(promise, label = 'background task') {
-  Promise.resolve(promise).catch((error) => {
+function runDetached(task, label = 'background task') {
+  try {
+    const result =
+      typeof task === 'function'
+        ? task()
+        : task;
+
+    Promise.resolve(result).catch((error) => {
+      console.warn(
+        `[HAR Browser] ${label} failed:`,
+        error?.message || error
+      );
+    });
+  } catch (error) {
     console.warn(
       `[HAR Browser] ${label} failed:`,
       error?.message || error
     );
-  });
+  }
 }
 
 function normalizeUrl(input) {
@@ -356,7 +368,10 @@ function handleShortcut(event, input) {
     if (!tab || tab.kind !== 'game') return;
 
     event.preventDefault();
-    void closeTab(tab.id);
+    runDetached(
+      () => closeTab(tab.id),
+      'close tab'
+    );
   }
 }
 
@@ -525,12 +540,12 @@ function createTab(
   // Navigation must never wait for CDP/runtime setup. The preload already
   // installs the top-frame runtime; CDP attaches to child targets in parallel.
   runDetached(
-    wc.loadURL(tab.url),
+    () => wc.loadURL(tab.url),
     `load ${tab.url}`
   );
 
   runDetached(
-    tab.runtimeController.start(),
+    () => tab.runtimeController.start(),
     'runtime controller start'
   );
 
@@ -645,7 +660,10 @@ function activateTab(id) {
     tab.imported &&
     importQueue.running
   ) {
-    void ensureImportPrefetch();
+    runDetached(
+      () => ensureImportPrefetch(),
+      'import prefetch'
+    );
   }
 
   return true;
@@ -767,8 +785,17 @@ async function startRecording(
     return { ok: true };
   }
 
+  const wc = getWebContents(tab.view);
+
+  if (!isWebContentsAlive(wc)) {
+    return {
+      ok: false,
+      error: 'Tab was closed'
+    };
+  }
+
   tab.recorder = new HarRecorder(
-    tab.view.webContents,
+    wc,
     {
       networkTap,
       gameOnly: tab.gameOnly,
@@ -779,9 +806,8 @@ async function startRecording(
   try {
     await tab.recorder.start();
 
-    if (reload) {
-      tab.view.webContents
-        .reloadIgnoringCache();
+    if (reload && isWebContentsAlive(wc)) {
+      wc.reloadIgnoringCache();
     }
 
     scheduleState();
@@ -1325,7 +1351,10 @@ function registerIpc() {
       notifyImportState();
 
       if (importQueue.running) {
-        void ensureImportPrefetch();
+        runDetached(
+      () => ensureImportPrefetch(),
+      'import prefetch'
+    );
       }
 
       return getImportState();

@@ -135,6 +135,8 @@ function serializeTab(tab) {
     muted: tab.muted,
     gameOnly: tab.gameOnly,
     imported: Boolean(tab.imported),
+    loadState: tab.loadState || 'idle',
+    loadError: tab.loadError || '',
     importIndex:
       Number.isInteger(tab.importIndex)
         ? tab.importIndex
@@ -406,6 +408,27 @@ function wireGameTabEvents(tab) {
     scheduleState();
   };
 
+  wc.on('did-start-loading', () => {
+    tab.loadState = 'loading';
+    tab.loadError = '';
+    scheduleState();
+  });
+
+  wc.on('did-stop-loading', () => {
+    if (tab.loadState === 'loading') {
+      tab.loadState = 'loaded';
+    }
+    scheduleState();
+  });
+
+  wc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame === false) return;
+    tab.loadState = 'failed';
+    tab.loadError = `${errorCode}: ${errorDescription}`;
+    if (validatedURL) tab.url = validatedURL;
+    scheduleState();
+  });
+
   wc.on('did-navigate', syncUrl);
   wc.on('did-navigate-in-page', syncUrl);
 
@@ -443,7 +466,14 @@ function wireGameTabEvents(tab) {
   });
 
   wc.on('did-finish-load', () => {
+    tab.loadState = 'loaded';
+    tab.loadError = '';
     syncUrl();
+
+    try {
+      wc.invalidate();
+    } catch {}
+
     runDetached(
       applyTabRuntime(tab),
       'tab runtime refresh'
@@ -503,6 +533,8 @@ function createTab(
     muted: true,
     gameOnly: true,
     imported: Boolean(options.imported),
+    loadState: 'idle',
+    loadError: '',
     importIndex:
       Number.isInteger(options.importIndex)
         ? options.importIndex
@@ -651,7 +683,29 @@ function activateTab(id) {
   } catch {}
 
   layoutTabs();
-  tab.view.webContents.focus();
+
+  const wc = getWebContents(tab.view);
+
+  if (isWebContentsAlive(wc)) {
+    try {
+      wc.focus();
+    } catch {}
+
+    // A page may have fully loaded while its WebContentsView was hidden.
+    // Force compositor presentation when the user activates it instead of
+    // requiring a second navigation/Enter keypress to make pixels appear.
+    try {
+      wc.invalidate();
+    } catch {}
+
+    setTimeout(() => {
+      if (!isWebContentsAlive(wc) || activeTabId !== tab.id) return;
+      try {
+        wc.invalidate();
+      } catch {}
+    }, 30);
+  }
+
   scheduleState();
   notifyImportState();
 

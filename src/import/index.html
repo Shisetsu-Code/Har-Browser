@@ -13,43 +13,45 @@
       <div class="topline">
         <div>
           <h1>Import targets.txt</h1>
-          <p>Load game URLs gradually without opening the whole catalog at once.</p>
+          <p>Keep a small rolling window of games preloaded ahead of the tab you are working on.</p>
         </div>
         <button id="choose" class="primary">LOAD TARGETS.TXT</button>
       </div>
 
       <div class="controls">
         <label>
-          Batch
-          <select id="batchSize">
+          Keep ahead
+          <select id="lookAhead">
             <option value="5">5 games</option>
             <option value="6" selected>6 games</option>
           </select>
         </label>
 
-        <button id="start">START QUEUE</button>
+        <button id="start">START PREFETCH</button>
         <button id="pause">PAUSE</button>
-        <button id="next">LOAD NEXT BATCH</button>
+        <button id="loadOne">LOAD ONE</button>
         <button id="clear">CLEAR</button>
       </div>
 
       <div class="metrics">
-        <div><strong id="total">0</strong><span>Total</span></div>
+        <div><strong id="total">0</strong><span>Total targets</span></div>
         <div><strong id="opened">0</strong><span>Opened</span></div>
-        <div><strong id="remaining">0</strong><span>Remaining</span></div>
-        <div><strong id="batch">0</strong><span>Current batch</span></div>
+        <div><strong id="remaining">0</strong><span>Not opened</span></div>
+        <div><strong id="ahead">0</strong><span>Loaded ahead</span></div>
       </div>
 
       <div class="status">
         <span id="stateText">No targets loaded.</span>
+        <span id="position"></span>
         <span id="file"></span>
       </div>
 
       <div class="notes">
-        Each batch waits for the games' first load (maximum timeout), then waits briefly before opening the next 5–6 tabs. Imported game tabs stay in the background and do not steal focus.
+        Prefetch starts games one at a time, about 700 ms apart. It keeps only 5–6 targets ahead of your current imported game. Each time you move forward through the game tabs, one more target is opened ahead so the queue follows your work instead of loading the whole catalog in batches.
       </div>
     </section>
   </main>
+
   <script src="./renderer.js"></script>
 </body>
 </html>

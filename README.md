@@ -13,6 +13,9 @@ A small Chromium-based browser focused on capturing game traffic quickly without
 - Captures request methods, URLs, headers, query strings, POST bodies, response headers and useful response bodies.
 - Adds WebSocket frames in the non-standard HAR field `_webSocketFrames` so game protocol traffic is not lost.
 - Uses GPU acceleration normally and explicitly enables GPU rasterization/zero-copy paths.
+- Starts every game tab muted by default; sound can be enabled per tab.
+- Provides per-tab runtime speed controls at 1×, 2×, 4× and 8×.
+- Enables GAME ONLY by default so exported HARs retain XHR/fetch/WebSocket/non-GET protocol traffic while dropping asset noise and OPTIONS preflight requests.
 
 ## Run on Windows
 
@@ -77,3 +80,15 @@ Architecture:
 - `src/har-recorder.js`: CDP-to-HAR capture engine.
 - `src/tab-preload.js`: ACTIVE-mode visibility/focus patch.
 - `src/ui/*`: browser chrome.
+
+
+## Runtime controls
+
+Each tab keeps its own settings:
+
+- **ACTIVE**: prevents background timer/visibility throttling.
+- **1× / 2× / 4× / 8×**: accelerates JavaScript timers, animation clocks and requestAnimationFrame time seen by the page. This speeds local game animations and client-side waits; it does not reduce server/network latency.
+- **MUTED**: enabled by default. It mutes audio output without blocking the game from loading audio resources.
+- **GAME ONLY**: enabled by default. The browser still observes the full network stream, but the saved HAR removes asset traffic and CORS OPTIONS noise and keeps API/protocol traffic such as XHR, fetch, WebSocket and POST requests.
+
+Switch **GAME ONLY** to **FULL HAR** before saving when you need every resource request.

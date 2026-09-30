@@ -119,7 +119,7 @@ function buildRuntimePatch(initialSpeed = 1, keepActive = true) {
 
   function pumpRaf() {
     nativeRafPending = false;
-    if (!rafCallbacks.size || !native.requestAnimationFrame) return;
+    if (!rafCallbacks.size) return;
 
     const targetNow = clockNow();
     const cycles = currentSpeed();
@@ -148,9 +148,13 @@ function buildRuntimePatch(initialSpeed = 1, keepActive = true) {
   }
 
   function ensureRaf() {
-    if (nativeRafPending || !native.requestAnimationFrame) return;
+    if (nativeRafPending) return;
     nativeRafPending = true;
-    native.requestAnimationFrame(pumpRaf);
+
+    // Do not depend on Chromium presenting a visible frame. Inactive
+    // WebContentsViews stay attached but hidden, so a native timer keeps the
+    // game's rAF loop advancing in the background.
+    native.setTimeout(pumpRaf, 16.6667);
   }
 
   function refreshAnimations(speedValue) {
@@ -207,18 +211,16 @@ function buildRuntimePatch(initialSpeed = 1, keepActive = true) {
   window.clearTimeout = clearTimer;
   window.clearInterval = clearTimer;
 
-  if (native.requestAnimationFrame) {
-    window.requestAnimationFrame = (callback) => {
-      const id = nextRafId++;
-      rafCallbacks.set(id, callback);
-      ensureRaf();
-      return id;
-    };
+  window.requestAnimationFrame = (callback) => {
+    const id = nextRafId++;
+    rafCallbacks.set(id, callback);
+    ensureRaf();
+    return id;
+  };
 
-    window.cancelAnimationFrame = (id) => {
-      rafCallbacks.delete(Number(id));
-    };
-  }
+  window.cancelAnimationFrame = (id) => {
+    rafCallbacks.delete(Number(id));
+  };
 
   const nativeAnimate = globalThis.Element?.prototype?.animate;
   if (nativeAnimate) {

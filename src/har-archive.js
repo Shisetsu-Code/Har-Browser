@@ -370,10 +370,31 @@ class HarArchiveManager {
       'utf8'
     );
 
-    await fs.rename(
-      tmp,
-      this.statePath
-    );
+    try {
+      await fs.rename(
+        tmp,
+        this.statePath
+      );
+    } catch (error) {
+      // Windows can reject rename-over-existing-file. Fall back to a replace
+      // sequence while keeping the temp file complete on disk.
+      if (
+        error?.code !== 'EEXIST' &&
+        error?.code !== 'EPERM'
+      ) {
+        throw error;
+      }
+
+      await fs.rm(
+        this.statePath,
+        { force: true }
+      );
+
+      await fs.rename(
+        tmp,
+        this.statePath
+      );
+    }
   }
 }
 

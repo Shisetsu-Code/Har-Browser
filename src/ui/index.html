@@ -21,6 +21,14 @@
       <input id="address" class="address" autocomplete="off" spellcheck="false" placeholder="Paste game URL">
       <button id="go">Go</button>
       <button id="keepActive" class="active-mode" title="Prevent background throttling and visibility pauses">ACTIVE</button>
+      <select id="speed" title="Accelerate page timers and animations">
+        <option value="1">1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+        <option value="8">8×</option>
+      </select>
+      <button id="mute" class="active-mode" title="Mute this tab">MUTED</button>
+      <button id="gameOnly" class="active-mode" title="Export only API/game protocol traffic">GAME ONLY</button>
       <button id="record">REC</button>
       <button id="recordReload" title="Start a fresh capture, then reload ignoring cache">REC + RELOAD</button>
       <button id="stopSave" disabled>STOP + SAVE HAR</button>

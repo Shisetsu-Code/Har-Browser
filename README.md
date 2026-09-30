@@ -97,3 +97,21 @@ Switch **GAME ONLY** to **FULL HAR** before saving when you need every resource 
 ## Resident background tabs
 
 HAR Browser keeps every opened game tab attached to the same BrowserWindow instead of removing inactive WebContentsViews. Switching tabs only raises the selected view to the top. This is intentional: background games remain resident, visible to Chromium, unthrottled, and continue running while another tab is selected. This uses more CPU/GPU than a normal browser because all game tabs are allowed to render continuously.
+
+
+## 0.4 compact workflow
+
+The native Electron menu is removed on Windows and the browser chrome is reduced to 68 px. HAR capture controls live in the tab row: **REC** and **STOP+SAVE HAR**.
+
+The per-tab ACTIVE, MUTED and GAME ONLY buttons are intentionally hidden from the compact UI. Game tabs still start with ACTIVE=true, MUTED=true and GAME ONLY=true.
+
+Keyboard workflow:
+
+- `Ctrl+T`: open a new game tab from anywhere, including while focus is inside a game.
+- `Ctrl+Tab`: move to the next game tab.
+- `Ctrl+Shift+Tab`: move to the previous game tab.
+- `Ctrl+W`: close the active game tab.
+- `Ctrl+L`: focus the URL field when the browser chrome has focus.
+- `Ctrl+Shift+S`: stop and save the active HAR capture.
+
+An always-present **IMPORT** tab loads a `targets.txt` file. The queue can open 5 or 6 games per batch (6 by default). Tabs in a batch are staggered, the queue waits for their first page load or timeout, pauses briefly, then opens the next batch. Imported games open in the background and do not steal focus.

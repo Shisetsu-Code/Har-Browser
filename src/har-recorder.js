@@ -230,6 +230,10 @@ class HarRecorder {
   constructor(webContents, options = {}) {
     this.webContents = webContents;
     this.networkTap = options.networkTap || null;
+    this.cdpSessionsProvider =
+      typeof options.cdpSessionsProvider === 'function'
+        ? options.cdpSessionsProvider
+        : () => [];
     this.gameOnly = options.gameOnly !== false;
     this.maxBodyBytes = options.maxBodyBytes ?? FULL_HAR_BODY_LIMIT;
     this.maxProtocolBodyBytes =
@@ -297,26 +301,56 @@ class HarRecorder {
       dbg.on('message', this._messageListener);
       dbg.on('detach', this._detachListener);
 
-      void this._enableCdp().catch((error) => {
-        this.cdpAvailable = false;
-        this.cdpError = error.message;
-        this.onUpdate();
-      });
+      // REC is not considered started until Network is enabled. This removes
+      // the race where the user spins immediately after pressing REC.
+      await this._enableCdp();
     } catch (error) {
       this.cdpAvailable = false;
-      this.cdpError = error.message;
+      this.cdpError = error?.message || String(error);
+      this.recording = false;
+
+      this.networkTap?.unregister(this.webContents.id, this);
+
+      try {
+        dbg.removeListener('message', this._messageListener);
+        dbg.removeListener('detach', this._detachListener);
+      } catch {}
+
       this.onUpdate();
+
+      throw new Error(
+        `Full network capture unavailable: ${this.cdpError}`
+      );
     }
   }
 
   async _enableCdp() {
     const dbg = this.webContents.debugger;
-
-    await dbg.sendCommand('Network.enable', {
+    const networkOptions = {
       maxTotalBufferSize: CDP_TOTAL_BUFFER,
       maxResourceBufferSize: CDP_RESOURCE_BUFFER,
       maxPostDataSize: CDP_POST_BUFFER
-    });
+    };
+
+    await dbg.sendCommand(
+      'Network.enable',
+      networkOptions
+    );
+
+    const existingSessions =
+      this.cdpSessionsProvider?.() || [];
+
+    for (const sessionId of existingSessions) {
+      try {
+        await dbg.sendCommand(
+          'Network.enable',
+          networkOptions,
+          sessionId
+        );
+      } catch {
+        // One stale/detached child target must not disable root capture.
+      }
+    }
 
     this.cdpAvailable = true;
     this.cdpError = null;
@@ -329,7 +363,7 @@ class HarRecorder {
         flatten: true
       });
     } catch {
-      // webRequest remains the reliable capture path even if target auto-attach is unavailable.
+      // Existing sessions above + webRequest remain active fallbacks.
     }
   }
 

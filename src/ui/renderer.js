@@ -87,7 +87,7 @@ function render() {
   gameOnlyEl.textContent = tab.gameOnly ? 'GAME ONLY' : 'FULL HAR';
 
   statsEl.textContent =
-    `${tab.stats?.requests || 0} requests · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.stats?.wsFrames || 0} WS frames`;
+    `${tab.stats?.requests || 0} requests · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.stats?.wsFrames || 0} WS frames · ${tab.runtimeFrames || 0} frames/${tab.runtimeTargets || 0} targets`;
 
   if (recording) setStatus('Recording network traffic…');
 }
@@ -135,8 +135,10 @@ keepActiveEl.addEventListener('click', async () => {
 });
 
 speedEl.addEventListener('change', async () => {
-  const speed = await invoke('tab:set-speed', { speed: Number(speedEl.value) });
-  if (speed) setStatus(`Runtime speed: ${speed}×`);
+  const result = await invoke('tab:set-speed', { speed: Number(speedEl.value) });
+  if (result?.speed) {
+    setStatus(`Runtime speed: ${result.speed}× · applied to ${result.frames || 0} frames / ${result.targets || 0} CDP targets`);
+  }
 });
 
 muteEl.addEventListener('click', async () => {

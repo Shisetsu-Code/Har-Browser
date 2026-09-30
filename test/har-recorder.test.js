@@ -8,7 +8,10 @@ const {
   normalizeHttpVersion,
   normalizeResourceType,
   uploadDataToText,
-  isGameOnlyEntry
+  isGameOnlyEntry,
+  isBodylessResponse,
+  bodyCaptureLimit,
+  mergeEntry
 } = require('../src/har-recorder');
 
 test('headersToArray converts CDP headers to HAR headers', () => {
@@ -72,4 +75,97 @@ test('GAME ONLY keeps protocol traffic and removes assets/preflight', () => {
     __resourceType: 'Media',
     request: { method: 'GET', url: 'blob:https://game.test/audio-id' }
   }), false);
+});
+
+
+test('protocol responses get the larger body capture budget', () => {
+  const entry = {
+    __resourceType: 'XHR',
+    request: {
+      method: 'POST',
+      url: 'https://game.test/api/spin'
+    },
+    response: { status: 200 }
+  };
+
+  assert.equal(
+    bodyCaptureLimit(
+      entry,
+      true,
+      32 * 1024 * 1024,
+      64 * 1024 * 1024
+    ),
+    64 * 1024 * 1024
+  );
+});
+
+test('bodyless HTTP responses are not treated as missing bodies', () => {
+  assert.equal(
+    isBodylessResponse({
+      request: { method: 'POST' },
+      response: { status: 204 }
+    }),
+    true
+  );
+
+  assert.equal(
+    isBodylessResponse({
+      request: { method: 'POST' },
+      response: { status: 200 }
+    }),
+    false
+  );
+});
+
+test('CDP response body survives merge with webRequest metadata', () => {
+  const base = {
+    startedDateTime: new Date().toISOString(),
+    time: 1,
+    request: {
+      method: 'POST',
+      url: 'https://game.test/api/spin',
+      headers: [],
+      bodySize: 12,
+      postData: {
+        mimeType: 'application/json',
+        text: '{"bet":1}'
+      }
+    },
+    response: {
+      status: 200,
+      headers: [],
+      bodySize: 25,
+      content: {
+        size: 25,
+        mimeType: 'application/json',
+        _bodyCaptureStatus: 'awaiting-cdp-merge'
+      }
+    },
+    timings: {}
+  };
+
+  const richer = {
+    ...base,
+    response: {
+      ...base.response,
+      content: {
+        size: 25,
+        mimeType: 'application/json',
+        text: '{"win":5,"balance":105}',
+        _bodyCaptureStatus: 'captured'
+      }
+    }
+  };
+
+  const merged = mergeEntry(base, richer);
+
+  assert.equal(
+    merged.response.content.text,
+    '{"win":5,"balance":105}'
+  );
+
+  assert.equal(
+    merged.response.content._bodyCaptureStatus,
+    'captured'
+  );
 });

@@ -124,3 +124,19 @@ Inactive WebContentsViews remain attached to the BrowserWindow but are hidden fr
 The accelerated requestAnimationFrame shim no longer depends on Chromium producing a visible compositor frame. It is pumped by a native timer, allowing hidden resident game tabs to continue advancing their JavaScript animation/game loops.
 
 targets.txt import now uses rolling prefetch instead of batches. START PREFETCH opens the next 5 or 6 targets one at a time, approximately 700 ms apart. When the user advances to an imported game tab, the prefetch frontier advances too and opens only enough additional targets to restore the configured 5/6-game look-ahead window. It never proceeds through the entire target list merely because time passes.
+
+
+## 0.5.0 persistent HAR archive
+
+The IMPORT tab now includes a persistent HAR archive queue.
+
+- Loading a targets.txt list also synchronizes it with the HAR archive.
+- HAR capture is intentionally serial: one target at a time with a short pause between targets.
+- Archive progress is stored under Electron userData in har-archive-state.json.
+- Completed HAR files are stored in the user's Downloads/HAR-Browser-HARs directory.
+- Existing HAR files are detected by deterministic URL-based filenames and reused to rebuild progress.
+- If the application is restarted while the archive was running, the queue resumes from the first unfinished target.
+- Failed targets are kept separately and can be retried from the IMPORT tab.
+- Each automatic HAR captures the initial page load plus a short settle period.
+
+Inactive game tabs are no longer hidden with setVisible(false). They remain compositor-visible and are parked outside the BrowserWindow bounds, preserving their renderer/rAF activity without drawing over the active tab. When selected, the view is moved back into the viewport and invalidated to force immediate presentation.

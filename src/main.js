@@ -981,6 +981,118 @@ async function stopAndSave(tab) {
   };
 }
 
+async function captureTargetHar(url, index) {
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed()
+  ) {
+    throw new Error('Main window unavailable');
+  }
+
+  const view = new WebContentsView({
+    webPreferences: {
+      partition: PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required'
+    }
+  });
+
+  view.setBackgroundColor('#101214');
+
+  const wc = getWebContents(view);
+
+  if (!isWebContentsAlive(wc)) {
+    throw new Error('HAR worker could not start');
+  }
+
+  const recorder = new HarRecorder(
+    wc,
+    {
+      networkTap,
+      gameOnly: false
+    }
+  );
+
+  let loadError = '';
+
+  try {
+    mainWindow.contentView.addChildView(view);
+
+    view.setVisible(true);
+    view.setBounds({
+      x: PARKED_VIEW_X,
+      y: TOOLBAR_HEIGHT,
+      width: 1280,
+      height: 720
+    });
+
+    wc.setBackgroundThrottling(false);
+    wc.setAudioMuted(true);
+
+    await recorder.start();
+
+    try {
+      await Promise.race([
+        wc.loadURL(url),
+        new Promise((_, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Load timeout after ${HAR_ARCHIVE_LOAD_TIMEOUT_MS} ms`
+                )
+              ),
+            HAR_ARCHIVE_LOAD_TIMEOUT_MS
+          );
+        })
+      ]);
+    } catch (error) {
+      loadError =
+        error?.message ||
+        String(error);
+    }
+
+    if (isWebContentsAlive(wc)) {
+      await delay(
+        HAR_ARCHIVE_SETTLE_MS
+      );
+    }
+
+    const har =
+      await recorder.stop();
+
+    har.log._archive = {
+      sourceUrl: url,
+      targetIndex: index,
+      capturedAt:
+        new Date().toISOString(),
+      loadError
+    };
+
+    return har;
+  } finally {
+    if (recorder.recording) {
+      try {
+        await recorder.stop();
+      } catch {}
+    }
+
+    try {
+      mainWindow?.contentView
+        ?.removeChildView(view);
+    } catch {}
+
+    if (isWebContentsAlive(wc)) {
+      try {
+        wc.close();
+      } catch {}
+    }
+  }
+}
+
 async function chooseTargetsFile() {
   const result =
     await dialog.showOpenDialog(

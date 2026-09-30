@@ -10,7 +10,8 @@ const {
   dialog,
   powerSaveBlocker,
   session,
-  Menu
+  Menu,
+  shell
 } = require('electron');
 
 const { HarRecorder } = require('./har-recorder');
@@ -18,10 +19,14 @@ const { NetworkTap } = require('./network-tap');
 const { RuntimeController } = require('./runtime-controller');
 const { buildRuntimePatch } = require('./runtime-patch');
 const { parseTargets } = require('./target-import');
+const { HarArchiveManager } = require('./har-archive');
 
 const TOOLBAR_HEIGHT = 68;
 const PARTITION = 'persist:har-browser';
 const IMPORT_PREFETCH_DELAY_MS = 700;
+const HAR_ARCHIVE_LOAD_TIMEOUT_MS = 20000;
+const HAR_ARCHIVE_SETTLE_MS = 5000;
+const PARKED_VIEW_X = -32000;
 
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
@@ -41,6 +46,7 @@ let nextTabId = 1;
 let suspensionBlocker = null;
 let stateTimer = null;
 let networkTap = null;
+let harArchive = null;
 let importLoopPromise = null;
 
 const tabs = new Map();
@@ -219,7 +225,18 @@ function getImportState() {
     activePosition:
       activeIndex >= 0 ? activeIndex + 1 : 0,
     filePath: importQueue.filePath,
-    errors: importQueue.errors
+    errors: importQueue.errors,
+    harArchive: harArchive?.getState?.() || {
+      total: 0,
+      completed: 0,
+      failed: 0,
+      remaining: 0,
+      running: false,
+      currentUrl: '',
+      currentIndex: -1,
+      outputDir: '',
+      lastFile: ''
+    }
   };
 }
 
@@ -238,17 +255,34 @@ function layoutTabs() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   const [width, height] = mainWindow.getContentSize();
-  const bounds = {
+  const contentWidth = Math.max(1, width);
+  const contentHeight = Math.max(1, height - TOOLBAR_HEIGHT);
+
+  const activeBounds = {
     x: 0,
     y: TOOLBAR_HEIGHT,
-    width: Math.max(1, width),
-    height: Math.max(1, height - TOOLBAR_HEIGHT)
+    width: contentWidth,
+    height: contentHeight
+  };
+
+  const parkedBounds = {
+    x: PARKED_VIEW_X,
+    y: TOOLBAR_HEIGHT,
+    width: contentWidth,
+    height: contentHeight
   };
 
   for (const tab of tabs.values()) {
     try {
-      tab.view.setBounds(bounds);
-      tab.view.setVisible(tab.id === activeTabId);
+      // Keep inactive views compositor-visible but physically outside the
+      // window. This avoids stale pixels/black first paints while still
+      // allowing their renderers and rAF loops to stay warm.
+      tab.view.setVisible(true);
+      tab.view.setBounds(
+        tab.id === activeTabId
+          ? activeBounds
+          : parkedBounds
+      );
     } catch {}
   }
 }
@@ -258,7 +292,7 @@ function attachBackgroundView(tab) {
 
   try {
     mainWindow.contentView.addChildView(tab.view);
-    tab.view.setVisible(tab.id === activeTabId);
+    tab.view.setVisible(true);
   } catch {}
 
   layoutTabs();
@@ -677,14 +711,8 @@ function activateTab(id) {
 
   activeTabId = tab.id;
 
-  for (const candidate of tabs.values()) {
-    try {
-      candidate.view.setVisible(
-        candidate.id === tab.id
-      );
-    } catch {}
-  }
-
+  // Every view stays visible to Chromium's compositor. Inactive tabs are
+  // parked outside the window by layoutTabs() instead of setVisible(false).
   try {
     mainWindow.contentView.addChildView(
       tab.view
@@ -994,6 +1022,12 @@ async function chooseTargetsFile() {
   importQueue.loading = false;
   importQueue.filePath = filePath;
   importQueue.errors = 0;
+
+  if (harArchive) {
+    await harArchive.setTargets(
+      importQueue.targets
+    );
+  }
 
   notifyImportState();
 

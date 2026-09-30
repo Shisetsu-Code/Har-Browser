@@ -92,17 +92,23 @@ function scheduleState() {
   }, 80);
 }
 
-function layoutActiveTab() {
-  if (!mainWindow || mainWindow.isDestroyed() || !activeTabId) return;
-  const tab = tabs.get(activeTabId);
-  if (!tab) return;
+function layoutTabs() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
   const [width, height] = mainWindow.getContentSize();
-  tab.view.setBounds({
+  const bounds = {
     x: 0,
     y: TOOLBAR_HEIGHT,
     width: Math.max(1, width),
     height: Math.max(1, height - TOOLBAR_HEIGHT)
-  });
+  };
+
+  for (const tab of tabs.values()) {
+    try {
+      tab.view.setVisible(true);
+      tab.view.setBounds(bounds);
+    } catch {}
+  }
 }
 
 async function injectFrameRuntime(tab, frame) {
@@ -273,16 +279,16 @@ function activateTab(id) {
   const tab = tabs.get(Number(id));
   if (!tab || !mainWindow) return false;
 
-  if (activeTabId && tabs.has(activeTabId)) {
-    const old = tabs.get(activeTabId);
-    try {
-      mainWindow.contentView.removeChildView(old.view);
-    } catch {}
-  }
-
   activeTabId = tab.id;
-  mainWindow.contentView.addChildView(tab.view);
-  layoutActiveTab();
+
+  // Keep every tab attached and visible. Adding an existing child view again
+  // only reorders it to the top, so background tabs remain resident/rendering.
+  try {
+    mainWindow.contentView.addChildView(tab.view);
+    tab.view.setVisible(true);
+  } catch {}
+
+  layoutTabs();
   tab.view.webContents.focus();
   scheduleState();
   return true;
@@ -299,11 +305,9 @@ async function closeTab(id) {
 
   await tab.runtimeController?.stop?.();
 
-  if (activeTabId === numericId) {
-    try {
-      mainWindow.contentView.removeChildView(tab.view);
-    } catch {}
-  }
+  try {
+    mainWindow.contentView.removeChildView(tab.view);
+  } catch {}
 
   tab.view.webContents.close();
   tabs.delete(numericId);
@@ -490,7 +494,7 @@ function createWindow() {
 
   mainWindow.webContents.setBackgroundThrottling(false);
   mainWindow.loadFile(path.join(__dirname, 'ui', 'index.html'));
-  mainWindow.on('resize', layoutActiveTab);
+  mainWindow.on('resize', layoutTabs);
 
   mainWindow.on('closed', () => {
     for (const tab of tabs.values()) {

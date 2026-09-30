@@ -1,6 +1,6 @@
 {
   "name": "har-browser",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Chromium browser for fast HAR capture without background tab throttling",
   "main": "src/main.js",

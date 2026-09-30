@@ -896,6 +896,8 @@ async function startRecording(
     {
       networkTap,
       gameOnly: tab.gameOnly,
+      cdpSessionsProvider: () =>
+        tab.runtimeController?.getSessionIds?.() || [],
       onUpdate: scheduleState
     }
   );

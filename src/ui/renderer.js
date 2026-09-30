@@ -10,6 +10,9 @@ const recordEl = el('record');
 const recordReloadEl = el('recordReload');
 const stopSaveEl = el('stopSave');
 const keepActiveEl = el('keepActive');
+const speedEl = el('speed');
+const muteEl = el('mute');
+const gameOnlyEl = el('gameOnly');
 
 let state = { tabs: [], activeTabId: null };
 
@@ -75,6 +78,14 @@ function render() {
   keepActiveEl.classList.toggle('active-mode', tab.keepActive);
   keepActiveEl.textContent = tab.keepActive ? 'ACTIVE' : 'NORMAL';
 
+  speedEl.value = String(tab.speed || 1);
+
+  muteEl.classList.toggle('active-mode', tab.muted);
+  muteEl.textContent = tab.muted ? 'MUTED' : 'SOUND';
+
+  gameOnlyEl.classList.toggle('active-mode', tab.gameOnly);
+  gameOnlyEl.textContent = tab.gameOnly ? 'GAME ONLY' : 'FULL HAR';
+
   statsEl.textContent =
     `${tab.stats?.requests || 0} requests · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.stats?.wsFrames || 0} WS frames`;
 
@@ -121,6 +132,21 @@ addressEl.addEventListener('keydown', (event) => {
 
 keepActiveEl.addEventListener('click', async () => {
   await invoke('tab:toggle-keep-active');
+});
+
+speedEl.addEventListener('change', async () => {
+  const speed = await invoke('tab:set-speed', { speed: Number(speedEl.value) });
+  if (speed) setStatus(`Runtime speed: ${speed}×`);
+});
+
+muteEl.addEventListener('click', async () => {
+  const muted = await invoke('tab:toggle-mute');
+  setStatus(muted ? 'Tab muted' : 'Tab sound enabled');
+});
+
+gameOnlyEl.addEventListener('click', async () => {
+  const gameOnly = await invoke('tab:toggle-game-only');
+  setStatus(gameOnly ? 'GAME ONLY HAR enabled' : 'Full HAR enabled');
 });
 
 recordEl.addEventListener('click', async () => {

@@ -95,11 +95,14 @@ class HarRecorder {
   async stop() {
     if (!this.startedAt) return this.toJSON();
 
+    // Freeze capture first so no new CDP events race with shutdown.
+    // Let any in-flight response-body reads finish before finalizing entries.
+    this.recording = false;
+    await Promise.allSettled([...this.pendingBodies]);
+
     for (const record of [...this.active.values()]) {
       this._finalize(record);
     }
-
-    await Promise.allSettled([...this.pendingBodies]);
 
     const dbg = this.webContents.debugger;
     if (dbg.isAttached()) {

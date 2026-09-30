@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const {
   headersToArray,
   queryString,
-  normalizeHttpVersion
+  normalizeHttpVersion,
+  normalizeResourceType,
+  uploadDataToText
 } = require('../src/har-recorder');
 
 test('headersToArray converts CDP headers to HAR headers', () => {
@@ -27,4 +29,18 @@ test('normalizeHttpVersion maps Chromium protocol names', () => {
   assert.equal(normalizeHttpVersion('h2'), 'HTTP/2');
   assert.equal(normalizeHttpVersion('h3'), 'HTTP/3');
   assert.equal(normalizeHttpVersion('http/1.1'), 'HTTP/1.1');
+});
+
+
+test('normalizes Electron webRequest resource types', () => {
+  assert.equal(normalizeResourceType('xhr'), 'XHR');
+  assert.equal(normalizeResourceType('webSocket'), 'WebSocket');
+  assert.equal(normalizeResourceType('subFrame'), 'Document');
+});
+
+test('extracts raw POST bytes from Electron uploadData', () => {
+  assert.equal(
+    uploadDataToText([{ bytes: Buffer.from('command=spin&bet=1') }]),
+    'command=spin&bet=1'
+  );
 });

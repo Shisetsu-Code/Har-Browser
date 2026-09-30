@@ -920,12 +920,21 @@ async function chooseTargetsFile() {
 
   importQueue.nextIndex = 0;
   importQueue.opened = 0;
-  importQueue.running = false;
+  importQueue.running =
+    importQueue.targets.length > 0;
   importQueue.loading = false;
   importQueue.filePath = filePath;
   importQueue.errors = 0;
 
   notifyImportState();
+
+  if (importQueue.running) {
+    runDetached(
+      () => ensureImportPrefetch(),
+      'automatic import prefetch'
+    );
+  }
+
   return getImportState();
 }
 

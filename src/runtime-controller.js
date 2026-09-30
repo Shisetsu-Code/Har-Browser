@@ -14,7 +14,9 @@ class RuntimeController {
     this.lastAppliedTargets = 0;
 
     this._messageListener = (_event, method, params, sessionId) => {
-      void this._onMessage(method, params, sessionId);
+      Promise.resolve(
+        this._onMessage(method, params, sessionId)
+      ).catch(() => {});
     };
   }
 
@@ -31,11 +33,36 @@ class RuntimeController {
     return buildRuntimePatch(speed, keepActive);
   }
 
+  _alive() {
+    try {
+      return Boolean(
+        this.webContents &&
+        !this.webContents.isDestroyed()
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  _debugger() {
+    if (!this._alive()) return null;
+
+    try {
+      return this.webContents.debugger || null;
+    } catch {
+      return null;
+    }
+  }
+
   async start() {
-    if (this.started || this.webContents.isDestroyed()) return;
+    if (this.started || !this._alive()) return;
     this.started = true;
 
-    const dbg = this.webContents.debugger;
+    const dbg = this._debugger();
+    if (!dbg) {
+      this.started = false;
+      return;
+    }
 
     try {
       if (!dbg.isAttached()) {
@@ -63,10 +90,12 @@ class RuntimeController {
     if (!this.started) return;
     this.started = false;
 
-    const dbg = this.webContents.debugger;
-    try {
-      dbg.removeListener('message', this._messageListener);
-    } catch {}
+    const dbg = this._debugger();
+    if (dbg) {
+      try {
+        dbg.removeListener('message', this._messageListener);
+      } catch {}
+    }
 
     // Do not detach here. HarRecorder may share this debugger connection.
     this.sessions.clear();
@@ -74,7 +103,7 @@ class RuntimeController {
   }
 
   async refresh() {
-    if (!this.started || this.webContents.isDestroyed()) return 0;
+    if (!this.started || !this._alive()) return 0;
 
     const targets = [null, ...this.sessions];
     let applied = 0;
@@ -98,7 +127,9 @@ class RuntimeController {
 
       this.sessions.add(childSessionId);
 
-      const dbg = this.webContents.debugger;
+      const dbg = this._debugger();
+      if (!dbg) return;
+
       await dbg.sendCommand('Target.setAutoAttach', {
         autoAttach: true,
         waitForDebuggerOnStart: false,
@@ -120,9 +151,10 @@ class RuntimeController {
   }
 
   async _installInSession(sessionId, replaceExisting = false) {
-    if (this.webContents.isDestroyed()) return false;
+    if (!this._alive()) return false;
 
-    const dbg = this.webContents.debugger;
+    const dbg = this._debugger();
+    if (!dbg) return false;
     const key = sessionId || 'root';
     const source = this._source();
 

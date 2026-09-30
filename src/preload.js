@@ -12,6 +12,9 @@ const allowed = new Set([
   'tab:forward',
   'tab:reload',
   'tab:toggle-keep-active',
+  'tab:set-speed',
+  'tab:toggle-mute',
+  'tab:toggle-game-only',
   'har:start',
   'har:stop-save'
 ]);

@@ -8,9 +8,11 @@ const {
   WebContentsView,
   ipcMain,
   dialog,
-  powerSaveBlocker
+  powerSaveBlocker,
+  session
 } = require('electron');
 const { HarRecorder } = require('./har-recorder');
+const { NetworkTap } = require('./network-tap');
 
 const TOOLBAR_HEIGHT = 104;
 const PARTITION = 'persist:har-browser';
@@ -28,6 +30,7 @@ let activeTabId = null;
 let nextTabId = 1;
 let suspensionBlocker = null;
 let stateTimer = null;
+let networkTap = null;
 const tabs = new Map();
 const smokeTest = process.argv.includes('--smoke-test');
 
@@ -223,6 +226,7 @@ async function startRecording(tab, reload) {
   if (tab.recorder?.recording) return { ok: true };
 
   tab.recorder = new HarRecorder(tab.view.webContents, {
+    networkTap,
     onUpdate: scheduleState
   });
 
@@ -371,6 +375,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   suspensionBlocker = powerSaveBlocker.start('prevent-app-suspension');
+  networkTap = new NetworkTap(session.fromPartition(PARTITION));
+  networkTap.install();
   registerIpc();
   createWindow();
 

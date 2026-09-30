@@ -1201,5 +1201,6 @@ module.exports = {
   timestampToIso,
   isGameOnlyEntry,
   isBodylessResponse,
-  bodyCaptureLimit
+  bodyCaptureLimit,
+  mergeEntry
 };

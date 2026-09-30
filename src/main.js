@@ -29,6 +29,7 @@ let nextTabId = 1;
 let suspensionBlocker = null;
 let stateTimer = null;
 const tabs = new Map();
+const smokeTest = process.argv.includes('--smoke-test');
 
 function normalizeUrl(input) {
   const value = String(input || '').trim();
@@ -358,6 +359,13 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     createTab();
     sendStateNow();
+
+    if (smokeTest) {
+      setTimeout(() => {
+        console.log('HAR_BROWSER_SMOKE_OK');
+        app.quit();
+      }, 750);
+    }
   });
 }
 

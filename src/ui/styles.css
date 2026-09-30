@@ -1,0 +1,185 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  background: #101214;
+  color: #e7eaee;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #101214;
+}
+
+#chrome {
+  height: 104px;
+  background: #16191d;
+  border-bottom: 1px solid #343a40;
+  user-select: none;
+}
+
+.tabs-row {
+  height: 34px;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #2b3036;
+}
+
+.tabs {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.tab {
+  min-width: 120px;
+  max-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 12px;
+  border: 0;
+  border-right: 1px solid #2b3036;
+  background: #1c2025;
+  color: #adb5bd;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #262c33;
+  color: #fff;
+}
+
+.tab.recording::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff4d4f;
+  flex: 0 0 auto;
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tab-close {
+  font-size: 16px;
+  line-height: 1;
+  opacity: .65;
+}
+
+.tab-close:hover {
+  opacity: 1;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #3b424a;
+  border-radius: 5px;
+  background: #252a30;
+  color: #e7eaee;
+  cursor: pointer;
+  height: 30px;
+}
+
+button:hover:not(:disabled) {
+  background: #303740;
+}
+
+button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.icon-button {
+  min-width: 34px;
+  border-radius: 0;
+  border-top: 0;
+  border-bottom: 0;
+}
+
+.toolbar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+}
+
+.address {
+  height: 31px;
+  flex: 1;
+  min-width: 220px;
+  border: 1px solid #3b424a;
+  border-radius: 6px;
+  outline: none;
+  background: #0f1114;
+  color: #f1f3f5;
+  padding: 0 10px;
+  user-select: text;
+}
+
+.address:focus {
+  border-color: #6c757d;
+}
+
+#go,
+#record,
+#recordReload,
+#stopSave,
+#keepActive {
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+#record,
+#recordReload {
+  border-color: #7a3030;
+}
+
+#record.recording,
+#recordReload.recording {
+  background: #7c2326;
+  border-color: #c23a40;
+}
+
+#stopSave {
+  border-color: #355f86;
+}
+
+#keepActive.active-mode {
+  border-color: #2f7a50;
+  background: #1d4b33;
+}
+
+.status-row {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 10px;
+  color: #8f9aa5;
+  font-size: 12px;
+}
+
+#stats {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}

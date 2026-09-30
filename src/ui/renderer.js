@@ -48,6 +48,8 @@ function render() {
       'tab',
       tab.id === state.activeTabId ? 'active' : '',
       tab.stats?.recording ? 'recording' : '',
+      tab.loadState === 'loading' ? 'loading' : '',
+      tab.loadState === 'failed' ? 'failed' : '',
       tab.kind === 'import' ? 'import-tab' : ''
     ].filter(Boolean).join(' ');
 
@@ -98,10 +100,23 @@ function render() {
   recordEl.classList.toggle('recording', recording);
 
   if (isGame) {
-    statsEl.textContent =
-      `${tab.stats?.requests || 0} req · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.runtimeFrames || 0}F/${tab.runtimeTargets || 0}T`;
+    const loadLabel =
+      tab.loadState === 'loading'
+        ? 'LOADING'
+        : tab.loadState === 'failed'
+          ? 'FAILED'
+          : tab.loadState === 'loaded'
+            ? 'READY'
+            : 'IDLE';
 
-    if (recording) setStatus('Recording…');
+    statsEl.textContent =
+      `${loadLabel} · ${tab.stats?.requests || 0} req · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.runtimeFrames || 0}F/${tab.runtimeTargets || 0}T`;
+
+    if (tab.loadState === 'failed') {
+      setStatus(tab.loadError || 'Load failed');
+    } else if (recording) {
+      setStatus('Recording…');
+    }
   } else {
     statsEl.textContent = 'IMPORT';
     setStatus('Target queue');

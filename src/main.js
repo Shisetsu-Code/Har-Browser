@@ -56,6 +56,9 @@ function serializeTab(tab) {
     title: tab.title || 'New Tab',
     url: tab.url || 'about:blank',
     keepActive: tab.keepActive,
+    speed: tab.speed,
+    muted: tab.muted,
+    gameOnly: tab.gameOnly,
     stats: tab.recorder?.getStats() || {
       recording: false,
       requests: 0,
@@ -98,10 +101,25 @@ function layoutActiveTab() {
   });
 }
 
+function applyTabRuntime(tab) {
+  const wc = tab.view.webContents;
+  if (wc.isDestroyed()) return;
+
+  wc.setAudioMuted(tab.muted);
+  wc.send('har-browser:set-speed', tab.speed);
+  wc.send('har-browser:set-keep-active', tab.keepActive);
+}
+
+function normalizeSpeed(value) {
+  const speed = Number(value);
+  return [1, 2, 4, 8].includes(speed) ? speed : 1;
+}
+
 function wireTabEvents(tab) {
   const wc = tab.view.webContents;
 
   wc.setBackgroundThrottling(false);
+  wc.setAudioMuted(tab.muted);
   wc.setWindowOpenHandler(({ url }) => {
     createTab(url);
     return { action: 'deny' };
@@ -120,7 +138,10 @@ function wireTabEvents(tab) {
 
   wc.on('did-navigate', syncUrl);
   wc.on('did-navigate-in-page', syncUrl);
-  wc.on('did-finish-load', syncUrl);
+  wc.on('did-finish-load', () => {
+    syncUrl();
+    applyTabRuntime(tab);
+  });
   wc.on('render-process-gone', (_event, details) => {
     tab.title = `Crashed: ${details.reason}`;
     scheduleState();
@@ -149,7 +170,10 @@ function createTab(url = 'about:blank') {
     recorder: null,
     title: 'New Tab',
     url: normalizeUrl(url),
-    keepActive: true
+    keepActive: true,
+    speed: 1,
+    muted: true,
+    gameOnly: true
   };
 
   tabs.set(id, tab);
@@ -215,6 +239,7 @@ function activeTab() {
 async function setKeepActive(tab, enabled) {
   tab.keepActive = Boolean(enabled);
   tab.view.webContents.setBackgroundThrottling(!tab.keepActive ? true : false);
+  tab.view.webContents.send('har-browser:set-keep-active', tab.keepActive);
   await tab.view.webContents.executeJavaScript(
     `window.__HAR_BROWSER_KEEP_ACTIVE__ = ${tab.keepActive ? 'true' : 'false'};`,
     true
@@ -227,6 +252,7 @@ async function startRecording(tab, reload) {
 
   tab.recorder = new HarRecorder(tab.view.webContents, {
     networkTap,
+    gameOnly: tab.gameOnly,
     onUpdate: scheduleState
   });
 
@@ -311,6 +337,33 @@ function registerIpc() {
     if (!tab) return false;
     await setKeepActive(tab, !tab.keepActive);
     return tab.keepActive;
+  });
+
+  ipcMain.handle('tab:set-speed', (_event, payload) => {
+    const tab = activeTab();
+    if (!tab) return 1;
+    tab.speed = normalizeSpeed(payload?.speed);
+    tab.view.webContents.send('har-browser:set-speed', tab.speed);
+    scheduleState();
+    return tab.speed;
+  });
+
+  ipcMain.handle('tab:toggle-mute', () => {
+    const tab = activeTab();
+    if (!tab) return true;
+    tab.muted = !tab.muted;
+    tab.view.webContents.setAudioMuted(tab.muted);
+    scheduleState();
+    return tab.muted;
+  });
+
+  ipcMain.handle('tab:toggle-game-only', () => {
+    const tab = activeTab();
+    if (!tab) return true;
+    tab.gameOnly = !tab.gameOnly;
+    tab.recorder?.setGameOnly(tab.gameOnly);
+    scheduleState();
+    return tab.gameOnly;
   });
 
   ipcMain.handle('har:start', async (_event, payload) => {

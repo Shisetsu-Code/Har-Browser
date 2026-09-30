@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "check": "node --check src/main.js && node --check src/har-recorder.js && node --check src/preload.js && node --check src/tab-preload.js && node --test"
+    "check": "node --check src/main.js && node --check src/har-recorder.js && node --check src/network-tap.js && node --check src/preload.js && node --check src/tab-preload.js && node --test"
   },
   "devDependencies": {
     "electron": "^44.4.0"

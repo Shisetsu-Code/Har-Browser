@@ -200,3 +200,20 @@ button:disabled { opacity: .4; cursor: default; }
   #status { display: none; }
   #stats { min-width: 110px; }
 }
+
+
+.tab.loading::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #d6a13a;
+}
+
+.tab.failed::after {
+  content: "!";
+  color: #ff6b6b;
+  font-weight: 700;
+  font-size: 11px;
+}

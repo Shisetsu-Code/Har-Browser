@@ -9,7 +9,12 @@ const allowed = new Set([
   'import:pause',
   'import:load-one',
   'import:clear',
-  'import:set-look-ahead'
+  'import:set-look-ahead',
+  'hararchive:start',
+  'hararchive:pause',
+  'hararchive:retry-failed',
+  'hararchive:reset',
+  'hararchive:open-folder'
 ]);
 
 contextBridge.exposeInMainWorld('targetImport', {

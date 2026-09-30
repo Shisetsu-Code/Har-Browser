@@ -115,3 +115,12 @@ Keyboard workflow:
 - `Ctrl+Shift+S`: stop and save the active HAR capture.
 
 An always-present **IMPORT** tab loads a `targets.txt` file. The queue can open 5 or 6 games per batch (6 by default). Tabs in a batch are staggered, the queue waits for their first page load or timeout, pauses briefly, then opens the next batch. Imported games open in the background and do not steal focus.
+
+
+## 0.4.1 rolling prefetch and clean tab switching
+
+Inactive WebContentsViews remain attached to the BrowserWindow but are hidden from display. Each view has an opaque dark background, so an empty/new tab cannot expose pixels from the previously selected game. Background throttling remains disabled.
+
+The accelerated requestAnimationFrame shim no longer depends on Chromium producing a visible compositor frame. It is pumped by a native timer, allowing hidden resident game tabs to continue advancing their JavaScript animation/game loops.
+
+targets.txt import now uses rolling prefetch instead of batches. START PREFETCH opens the next 5 or 6 targets one at a time, approximately 700 ms apart. When the user advances to an imported game tab, the prefetch frontier advances too and opens only enough additional targets to restore the configured 5/6-game look-ahead window. It never proceeds through the entire target list merely because time passes.

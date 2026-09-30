@@ -9,6 +9,12 @@ const loadOneEl = el('loadOne');
 const clearEl = el('clear');
 const lookAheadEl = el('lookAhead');
 
+const harStartEl = el('harStart');
+const harPauseEl = el('harPause');
+const harRetryEl = el('harRetry');
+const harResetEl = el('harReset');
+const harFolderEl = el('harFolder');
+
 let state = {
   total: 0,
   opened: 0,
@@ -19,11 +25,29 @@ let state = {
   aheadLoaded: 0,
   activePosition: 0,
   filePath: '',
-  errors: 0
+  errors: 0,
+  harArchive: {
+    total: 0,
+    completed: 0,
+    failed: 0,
+    remaining: 0,
+    running: false,
+    currentUrl: '',
+    currentIndex: -1,
+    outputDir: '',
+    lastFile: ''
+  }
 };
 
 function render(next) {
-  state = { ...state, ...next };
+  state = {
+    ...state,
+    ...next,
+    harArchive: {
+      ...state.harArchive,
+      ...(next?.harArchive || {})
+    }
+  };
 
   el('total').textContent =
     String(state.total || 0);
@@ -84,6 +108,75 @@ function render(next) {
     el('stateText').textContent +=
       ` · ${state.errors} errors`;
   }
+
+  const har = state.harArchive;
+
+  el('harTotal').textContent =
+    String(har.total || 0);
+
+  el('harCompleted').textContent =
+    String(har.completed || 0);
+
+  el('harRemaining').textContent =
+    String(har.remaining || 0);
+
+  el('harFailed').textContent =
+    String(har.failed || 0);
+
+  el('harOutput').textContent =
+    har.outputDir || '';
+
+  if (har.currentUrl) {
+    const position =
+      Number.isInteger(har.currentIndex) &&
+      har.currentIndex >= 0
+        ? `${har.currentIndex + 1}/${har.total}`
+        : '';
+
+    el('harState').textContent =
+      har.running
+        ? 'Capturing HAR…'
+        : 'Finishing current HAR…';
+
+    el('harCurrent').textContent =
+      `${position} ${har.currentUrl}`.trim();
+  } else {
+    el('harCurrent').textContent = '';
+
+    if (har.running) {
+      el('harState').textContent =
+        'HAR archive running…';
+    } else if (har.total > 0 && har.remaining === 0 && har.failed === 0) {
+      el('harState').textContent =
+        'HAR archive complete.';
+    } else if (har.total > 0) {
+      el('harState').textContent =
+        'HAR archive paused / ready.';
+    } else {
+      el('harState').textContent =
+        'Archive idle.';
+    }
+  }
+
+  harStartEl.disabled =
+    har.running ||
+    !har.total ||
+    !har.remaining;
+
+  harPauseEl.disabled =
+    !har.running;
+
+  harRetryEl.disabled =
+    har.running ||
+    !har.failed;
+
+  harResetEl.disabled =
+    har.running ||
+    Boolean(har.currentUrl) ||
+    (!har.completed && !har.failed);
+
+  harFolderEl.disabled =
+    !har.outputDir;
 }
 
 async function invoke(channel, payload) {
@@ -142,6 +235,30 @@ lookAheadEl.addEventListener(
   }
 );
 
-window.targetImport.onState(render);
+harStartEl.addEventListener(
+  'click',
+  () => invoke('hararchive:start')
+);
 
+harPauseEl.addEventListener(
+  'click',
+  () => invoke('hararchive:pause')
+);
+
+harRetryEl.addEventListener(
+  'click',
+  () => invoke('hararchive:retry-failed')
+);
+
+harResetEl.addEventListener(
+  'click',
+  () => invoke('hararchive:reset')
+);
+
+harFolderEl.addEventListener(
+  'click',
+  () => invoke('hararchive:open-folder')
+);
+
+window.targetImport.onState(render);
 invoke('import:get-state');

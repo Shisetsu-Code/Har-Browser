@@ -49,6 +49,27 @@ function normalizeResourceType(type) {
   return value ? value[0].toUpperCase() + value.slice(1) : 'Other';
 }
 
+function isGameOnlyEntry(entry) {
+  const method = String(entry?.request?.method || 'GET').toUpperCase();
+  const url = String(entry?.request?.url || '');
+  const resourceType = String(entry?.__resourceType || '').toLowerCase();
+
+  if (method === 'OPTIONS') return false;
+  if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+  if (entry?._webSocketFrames?.length) return true;
+  if (['xhr', 'fetch', 'websocket', 'eventsource'].includes(resourceType)) return true;
+  if (!['GET', 'HEAD'].includes(method)) return true;
+
+  return false;
+}
+
+function entryTrafficBytes(entry) {
+  const responseBytes = Number(entry?.response?.bodySize);
+  const requestBytes = Number(entry?.request?.bodySize);
+  return (Number.isFinite(responseBytes) && responseBytes > 0 ? responseBytes : 0) +
+    (Number.isFinite(requestBytes) && requestBytes > 0 ? requestBytes : 0);
+}
+
 function utf8Size(value = '') {
   return Buffer.byteLength(String(value), 'utf8');
 }
@@ -182,6 +203,7 @@ class HarRecorder {
   constructor(webContents, options = {}) {
     this.webContents = webContents;
     this.networkTap = options.networkTap || null;
+    this.gameOnly = options.gameOnly !== false;
     this.maxBodyBytes = options.maxBodyBytes ?? 8 * 1024 * 1024;
     this.onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
     this._messageListener = (_event, method, params, sessionId) =>
@@ -214,6 +236,11 @@ class HarRecorder {
     this.cdpAvailable = false;
     this.cdpError = null;
     this.ownsDebugger = false;
+  }
+
+  setGameOnly(enabled) {
+    this.gameOnly = Boolean(enabled);
+    this.onUpdate();
   }
 
   async start() {
@@ -306,13 +333,19 @@ class HarRecorder {
   }
 
   getStats() {
-    const primaryRequests = this.webEntries.length + this.webActive.size;
-    const fallbackRequests = this.entries.length + this.active.size;
+    const primaryCandidates = [...this.webEntries, ...this.webActive.values()];
+    const fallbackCandidates = [...this.entries, ...this.active.values()];
+    const candidates = primaryCandidates.length ? primaryCandidates : fallbackCandidates;
+    const visibleCandidates = this.gameOnly
+      ? candidates.filter(isGameOnlyEntry)
+      : candidates;
 
     return {
       recording: this.recording,
-      requests: primaryRequests || fallbackRequests,
-      bytes: this.totalBytes,
+      requests: visibleCandidates.length,
+      bytes: this.gameOnly
+        ? visibleCandidates.reduce((sum, entry) => sum + entryTrafficBytes(entry), 0)
+        : this.totalBytes,
       wsFrames: this.wsFrames,
       webEvents: this.webEvents,
       cdpEvents: this.cdpEvents,
@@ -322,7 +355,8 @@ class HarRecorder {
   }
 
   toJSON() {
-    const entries = this._mergedEntries();
+    const entries = this._mergedEntries()
+      .filter((entry) => !this.gameOnly || isGameOnlyEntry(entry));
 
     return {
       log: {
@@ -880,5 +914,6 @@ module.exports = {
   normalizeHttpVersion,
   normalizeResourceType,
   uploadDataToText,
-  timestampToIso
+  timestampToIso,
+  isGameOnlyEntry
 };

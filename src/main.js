@@ -1589,9 +1589,67 @@ function registerIpc() {
 
       if (importQueue.running) {
         runDetached(
-      () => ensureImportPrefetch(),
-      'import prefetch'
-    );
+          () => ensureImportPrefetch(),
+          'import prefetch'
+        );
+      }
+
+      return getImportState();
+    }
+  );
+
+  ipcMain.handle(
+    'hararchive:start',
+    async () => {
+      if (harArchive) {
+        await harArchive.start();
+      }
+      notifyImportState();
+      return getImportState();
+    }
+  );
+
+  ipcMain.handle(
+    'hararchive:pause',
+    async () => {
+      if (harArchive) {
+        await harArchive.pause();
+      }
+      notifyImportState();
+      return getImportState();
+    }
+  );
+
+  ipcMain.handle(
+    'hararchive:retry-failed',
+    async () => {
+      if (harArchive) {
+        await harArchive.retryFailed();
+      }
+      notifyImportState();
+      return getImportState();
+    }
+  );
+
+  ipcMain.handle(
+    'hararchive:reset',
+    async () => {
+      if (harArchive) {
+        await harArchive.reset();
+      }
+      notifyImportState();
+      return getImportState();
+    }
+  );
+
+  ipcMain.handle(
+    'hararchive:open-folder',
+    async () => {
+      const outputDir =
+        harArchive?.getState?.().outputDir;
+
+      if (outputDir) {
+        await shell.openPath(outputDir);
       }
 
       return getImportState();
@@ -1664,6 +1722,13 @@ function createWindow() {
       createTab();
       sendStateNow();
 
+      if (harArchive?.shouldResume?.()) {
+        runDetached(
+          () => harArchive.start(),
+          'resume HAR archive'
+        );
+      }
+
       if (smokeTest) {
         setTimeout(() => {
           console.log(
@@ -1676,7 +1741,7 @@ function createWindow() {
   );
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
   suspensionBlocker =
@@ -1692,6 +1757,22 @@ app.whenReady().then(() => {
     );
 
   networkTap.install();
+
+  harArchive =
+    new HarArchiveManager({
+      statePath: path.join(
+        app.getPath('userData'),
+        'har-archive-state.json'
+      ),
+      outputDir: path.join(
+        app.getPath('downloads'),
+        'HAR-Browser-HARs'
+      ),
+      captureTarget: captureTargetHar,
+      onUpdate: notifyImportState
+    });
+
+  await harArchive.init();
 
   registerIpc();
   createWindow();

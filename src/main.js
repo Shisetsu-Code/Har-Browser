@@ -1031,7 +1031,10 @@ function startImportQueue() {
 
   importQueue.running = true;
   notifyImportState();
-  void ensureImportPrefetch();
+  runDetached(
+    () => ensureImportPrefetch(),
+    'import prefetch'
+  );
 
   return getImportState();
 }

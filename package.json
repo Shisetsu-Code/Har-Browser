@@ -1,13 +1,13 @@
 {
   "name": "har-browser",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "description": "Chromium browser for fast HAR capture without background tab throttling",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "check": "node --check src/main.js && node --check src/har-recorder.js && node --check src/network-tap.js && node --check src/runtime-patch.js && node --check src/runtime-controller.js && node --check src/preload.js && node --check src/tab-preload.js && node --check src/ui/renderer.js && node --test"
+    "check": "node --check src/main.js && node --check src/har-recorder.js && node --check src/network-tap.js && node --check src/runtime-patch.js && node --check src/runtime-controller.js && node --check src/target-import.js && node --check src/preload.js && node --check src/tab-preload.js && node --check src/import-preload.js && node --check src/ui/renderer.js && node --check src/import/renderer.js && node --test"
   },
   "devDependencies": {
     "electron": "^44.4.0"

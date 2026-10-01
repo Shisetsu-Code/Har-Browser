@@ -6,11 +6,6 @@ const FULL_HAR_BODY_LIMIT = 32 * 1024 * 1024;
 const CDP_TOTAL_BUFFER = 512 * 1024 * 1024;
 const CDP_RESOURCE_BUFFER = 128 * 1024 * 1024;
 const CDP_POST_BUFFER = 64 * 1024 * 1024;
-const FETCH_RESPONSE_PATTERNS = [
-  { urlPattern: '*', resourceType: 'XHR', requestStage: 'Response' },
-  { urlPattern: '*', resourceType: 'Fetch', requestStage: 'Response' },
-  { urlPattern: '*', resourceType: 'Other', requestStage: 'Response' }
-];
 
 function headersToArray(headers = {}) {
   const result = [];
@@ -264,8 +259,7 @@ class HarRecorder {
 
     this.webSockets = new Map();
     this.pendingBodies = new Set();
-    this.fetchBodies = new Map();
-    this.fetchEnabledSessions = new Set();
+    this.streamBodies = new Map();
 
     this.totalBytes = 0;
     this.wsFrames = 0;
@@ -360,29 +354,30 @@ class HarRecorder {
 
   async _enableCaptureDomains(sessionId) {
     const dbg = this.webContents.debugger;
-    const networkOptions = {
+
+    const baseOptions = {
       maxTotalBufferSize: CDP_TOTAL_BUFFER,
       maxResourceBufferSize: CDP_RESOURCE_BUFFER,
       maxPostDataSize: CDP_POST_BUFFER
     };
 
-    await dbg.sendCommand(
-      'Network.enable',
-      networkOptions,
-      sessionId || undefined
-    );
-
-    await dbg.sendCommand(
-      'Fetch.enable',
-      {
-        patterns: FETCH_RESPONSE_PATTERNS
-      },
-      sessionId || undefined
-    );
-
-    this.fetchEnabledSessions.add(
-      sessionId || 'root'
-    );
+    try {
+      await dbg.sendCommand(
+        'Network.enable',
+        {
+          ...baseOptions,
+          enableDurableMessages: true
+        },
+        sessionId || undefined
+      );
+    } catch {
+      // Older Chromium builds may not expose durable messages.
+      await dbg.sendCommand(
+        'Network.enable',
+        baseOptions,
+        sessionId || undefined
+      );
+    }
   }
 
   async stop() {
@@ -397,10 +392,6 @@ class HarRecorder {
     // Keep listening briefly so loadingFinished + getResponseBody can arrive
     // after the server response but before the HAR is frozen.
     await this._waitForNetworkQuiet();
-
-    // Disable Fetch while the listener is still active. This guarantees no
-    // response can remain paused after capture stops.
-    await this._disableFetchDomains();
 
     this.recording = false;
     this.networkTap?.unregister(this.webContents.id, this);
@@ -439,26 +430,6 @@ class HarRecorder {
     this.stopping = false;
     this.onUpdate();
     return this.toJSON();
-  }
-
-  async _disableFetchDomains() {
-    const dbg = this.webContents.debugger;
-    const sessions = [...this.fetchEnabledSessions];
-
-    for (const key of sessions) {
-      const sessionId =
-        key === 'root' ? undefined : key;
-
-      try {
-        await dbg.sendCommand(
-          'Fetch.disable',
-          {},
-          sessionId
-        );
-      } catch {}
-    }
-
-    this.fetchEnabledSessions.clear();
   }
 
   async _waitForPendingBodies() {
@@ -524,7 +495,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.5.2'
+          version: '0.5.3'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),
@@ -809,14 +780,14 @@ class HarRecorder {
     }
 
     switch (method) {
-      case 'Fetch.requestPaused':
-        this._fetchRequestPaused(params, sessionId);
-        break;
       case 'Network.requestWillBeSent':
         this._requestWillBeSent(params, sessionId);
         break;
       case 'Network.responseReceived':
         this._responseReceived(params, sessionId);
+        break;
+      case 'Network.dataReceived':
+        this._dataReceived(params, sessionId);
         break;
       case 'Network.loadingFinished':
         this._loadingFinished(params, sessionId);
@@ -847,123 +818,6 @@ class HarRecorder {
     }
   }
 
-  _fetchRequestPaused(params, sessionId) {
-    const fetchRequestId = params?.requestId;
-    if (!fetchRequestId) return;
-
-    const networkId = params?.networkId;
-    const key = networkId
-      ? this._cdpKey(networkId, sessionId)
-      : null;
-
-    const activeEntry =
-      key ? this.active.get(key) : null;
-
-    const probeEntry =
-      activeEntry || {
-        request: {
-          method: params.request?.method || 'GET',
-          url: params.request?.url || ''
-        },
-        response: {
-          status: params.responseStatusCode || 0,
-          content: {}
-        },
-        __resourceType:
-          params.resourceType || 'Other'
-      };
-
-    const responseStage =
-      params.responseStatusCode !== undefined ||
-      params.responseErrorReason !== undefined;
-
-    const shouldCapture =
-      responseStage &&
-      isGameOnlyEntry(probeEntry) &&
-      !isBodylessResponse(probeEntry);
-
-    const promise = (async () => {
-      let captured = null;
-      let captureError = null;
-
-      try {
-        if (shouldCapture) {
-          captured =
-            await this.webContents.debugger.sendCommand(
-              'Fetch.getResponseBody',
-              { requestId: fetchRequestId },
-              sessionId
-            );
-
-          const record = {
-            body: captured?.body ?? '',
-            base64Encoded:
-              Boolean(captured?.base64Encoded),
-            capturedAt: Date.now()
-          };
-
-          if (key) {
-            this.fetchBodies.set(key, record);
-          }
-
-          if (
-            activeEntry &&
-            !activeEntry.__finalized
-          ) {
-            this._applyCapturedBody(
-              activeEntry,
-              record,
-              'fetch'
-            );
-          }
-        }
-      } catch (error) {
-        captureError =
-          error?.message || String(error);
-
-        if (
-          activeEntry &&
-          !activeEntry.__finalized &&
-          activeEntry.response?.content?.text === undefined
-        ) {
-          activeEntry.response.content._fetchBodyCaptureError =
-            captureError;
-        }
-      } finally {
-        try {
-          await this.webContents.debugger.sendCommand(
-            'Fetch.continueRequest',
-            { requestId: fetchRequestId },
-            sessionId
-          );
-        } catch (continueError) {
-          try {
-            await this.webContents.debugger.sendCommand(
-              'Fetch.continueResponse',
-              { requestId: fetchRequestId },
-              sessionId
-            );
-          } catch {
-            if (
-              activeEntry &&
-              !activeEntry.__finalized
-            ) {
-              activeEntry.response.content._fetchContinueError =
-                continueError?.message ||
-                String(continueError);
-            }
-          }
-        }
-      }
-    })();
-
-    this.pendingBodies.add(promise);
-
-    promise.finally(() => {
-      this.pendingBodies.delete(promise);
-    });
-  }
-
   _applyCapturedBody(entry, record, source) {
     if (!entry || !record) return;
 
@@ -971,8 +825,7 @@ class HarRecorder {
       record.body ?? '';
 
     if (record.base64Encoded) {
-      entry.response.content.encoding =
-        'base64';
+      entry.response.content.encoding = 'base64';
     } else {
       delete entry.response.content.encoding;
     }
@@ -993,30 +846,156 @@ class HarRecorder {
         : utf8Size(record.body || '');
 
     if (
-      !Number.isFinite(
-        entry.response.content.size
-      ) ||
+      !Number.isFinite(entry.response.content.size) ||
       entry.response.content.size <= 0
     ) {
       entry.response.content.size = size;
     }
   }
 
-  _applyFetchBodyIfAvailable(entry) {
+  _isTextualMime(mimeType = '') {
+    const mime = String(mimeType).toLowerCase();
+
+    return (
+      mime.startsWith('text/') ||
+      mime.includes('json') ||
+      mime.includes('javascript') ||
+      mime.includes('xml') ||
+      mime.includes('x-www-form-urlencoded')
+    );
+  }
+
+  _startResponseStream(entry, requestId, sessionId) {
+    if (!entry || isBodylessResponse(entry)) return;
+
+    const decision = this._bodyCaptureDecision(
+      entry,
+      entry.response?.content?.size
+    );
+
+    if (!decision.capture) return;
+
+    const key = this._cdpKey(requestId, sessionId);
+
+    if (this.streamBodies.has(key)) return;
+
+    const record = {
+      chunks: [],
+      started: false,
+      failed: false,
+      error: ''
+    };
+
+    this.streamBodies.set(key, record);
+
+    const promise = this.webContents.debugger
+      .sendCommand(
+        'Network.streamResourceContent',
+        { requestId },
+        sessionId
+      )
+      .then((result) => {
+        record.started = true;
+
+        if (result?.bufferedData) {
+          record.chunks.push(
+            Buffer.from(
+              result.bufferedData,
+              'base64'
+            )
+          );
+        }
+
+        entry.response.content._bodyCaptureStatus =
+          'streaming';
+
+        entry.response.content._bodyCaptureSource =
+          'network-stream';
+      })
+      .catch((error) => {
+        record.failed = true;
+        record.error =
+          error?.message || String(error);
+
+        entry.response.content._streamCaptureError =
+          record.error;
+      })
+      .finally(() => {
+        this.pendingBodies.delete(promise);
+      });
+
+    this.pendingBodies.add(promise);
+  }
+
+  _dataReceived(params, sessionId) {
+    const key = this._cdpKey(
+      params.requestId,
+      sessionId
+    );
+
+    const record = this.streamBodies.get(key);
+
+    if (!record || !params.data) return;
+
+    try {
+      record.chunks.push(
+        Buffer.from(params.data, 'base64')
+      );
+    } catch (error) {
+      record.failed = true;
+      record.error =
+        error?.message || String(error);
+    }
+  }
+
+  _applyStreamBodyIfAvailable(entry) {
     const record =
-      this.fetchBodies.get(entry.__requestId);
+      this.streamBodies.get(entry.__requestId);
 
     if (!record) return false;
 
-    this.fetchBodies.delete(
+    this.streamBodies.delete(
       entry.__requestId
     );
 
-    this._applyCapturedBody(
-      entry,
-      record,
-      'fetch'
+    if (
+      record.failed ||
+      !record.started ||
+      record.chunks.length === 0
+    ) {
+      return false;
+    }
+
+    const buffer = Buffer.concat(
+      record.chunks
     );
+
+    if (
+      this._isTextualMime(
+        entry.response.content.mimeType
+      )
+    ) {
+      this._applyCapturedBody(
+        entry,
+        {
+          body: buffer.toString('utf8'),
+          base64Encoded: false
+        },
+        'network-stream'
+      );
+    } else {
+      this._applyCapturedBody(
+        entry,
+        {
+          body: buffer.toString('base64'),
+          base64Encoded: true
+        },
+        'network-stream'
+      );
+    }
+
+    entry.response.content.size =
+      buffer.length;
 
     return true;
   }
@@ -1107,8 +1086,10 @@ class HarRecorder {
       params.timestamp
     );
 
-    this._applyFetchBodyIfAvailable(
-      entry
+    this._startResponseStream(
+      entry,
+      params.requestId,
+      sessionId
     );
   }
 
@@ -1150,7 +1131,7 @@ class HarRecorder {
 
     if (
       entry.response.content.text !== undefined ||
-      this._applyFetchBodyIfAvailable(entry)
+      this._applyStreamBodyIfAvailable(entry)
     ) {
       this._finalize(entry);
       return;

@@ -20,6 +20,7 @@ const { RuntimeController } = require('./runtime-controller');
 const { buildRuntimePatch } = require('./runtime-patch');
 const { parseTargets } = require('./target-import');
 const { HarArchiveManager } = require('./har-archive');
+const { configureAutoUpdater } = require('./update-manager');
 
 const TOOLBAR_HEIGHT = 68;
 const PARTITION = 'persist:har-browser';
@@ -48,6 +49,7 @@ let stateTimer = null;
 let networkTap = null;
 let harArchive = null;
 let importLoopPromise = null;
+let updateManager = null;
 
 const tabs = new Map();
 const smokeTest = process.argv.includes('--smoke-test');
@@ -1745,6 +1747,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  app.setAppUserModelId('com.shisetsu.harbrowser');
 
   suspensionBlocker =
     powerSaveBlocker.start(
@@ -1779,6 +1782,10 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
 
+  updateManager = configureAutoUpdater(
+    () => mainWindow
+  );
+
   app.on('activate', () => {
     if (
       BrowserWindow
@@ -1788,6 +1795,10 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+});
+
+app.on('before-quit', () => {
+  updateManager?.stop?.();
 });
 
 app.on(

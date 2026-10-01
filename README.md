@@ -28,6 +28,33 @@ npm install
 npm start
 ```
 
+
+## Windows installer and automatic updates
+
+HAR Browser can be distributed as a normal Windows desktop application.
+
+- GitHub Releases contain the NSIS installer.
+- The installer creates a **HAR Browser** shortcut on the Windows desktop and in the Start menu.
+- The installed application checks GitHub Releases about 5 seconds after startup and every 30 minutes while it remains open.
+- When a newer version is found, it downloads in the background.
+- Once downloaded, HAR Browser offers **Restart and install**. Choosing **Later** keeps the current session running and installs the update automatically when the application exits.
+
+To build an installer locally:
+
+```powershell
+npm install
+npm run dist:win
+```
+
+To publish a version, update `package.json` to the new semantic version, merge the change, then push the matching tag:
+
+```powershell
+git tag v0.6.0
+git push origin v0.6.0
+```
+
+The `Release Windows` GitHub Actions workflow builds the installer and publishes the update metadata used by `electron-updater`.
+
 ## Fast capture workflow
 
 1. Open the game URL.

@@ -954,17 +954,23 @@ class HarRecorder {
 
     if (!record) return false;
 
-    this.streamBodies.delete(
-      entry.__requestId
-    );
+    if (!record.started) {
+      return false;
+    }
 
     if (
       record.failed ||
-      !record.started ||
       record.chunks.length === 0
     ) {
+      this.streamBodies.delete(
+        entry.__requestId
+      );
       return false;
     }
+
+    this.streamBodies.delete(
+      entry.__requestId
+    );
 
     const buffer = Buffer.concat(
       record.chunks

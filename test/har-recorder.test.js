@@ -169,3 +169,48 @@ test('CDP response body survives merge with webRequest metadata', () => {
     'captured'
   );
 });
+
+
+test('merge preserves body capture failure diagnostics from CDP', () => {
+  const base = {
+    request: {
+      method: 'POST',
+      url: 'https://game.test/api/spin',
+      headers: []
+    },
+    response: {
+      status: 200,
+      headers: [],
+      content: {
+        mimeType: 'application/json',
+        _bodyCaptureStatus: 'awaiting-cdp-merge'
+      }
+    },
+    timings: {},
+    time: 0
+  };
+
+  const richer = {
+    ...base,
+    response: {
+      ...base.response,
+      content: {
+        mimeType: 'application/json',
+        _bodyCaptureStatus: 'unavailable',
+        _bodyCaptureError: 'No resource with given identifier found'
+      }
+    }
+  };
+
+  const merged = mergeEntry(base, richer);
+
+  assert.equal(
+    merged.response.content._bodyCaptureStatus,
+    'unavailable'
+  );
+
+  assert.equal(
+    merged.response.content._bodyCaptureError,
+    'No resource with given identifier found'
+  );
+});

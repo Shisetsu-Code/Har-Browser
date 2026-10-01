@@ -277,6 +277,24 @@ class HarRecorder {
     this.onUpdate();
   }
 
+  _sendCommand(method, params = {}, sessionId) {
+    const dbg = this.webContents.debugger;
+
+    if (
+      sessionId === undefined ||
+      sessionId === null ||
+      sessionId === ''
+    ) {
+      return dbg.sendCommand(method, params);
+    }
+
+    return dbg.sendCommand(
+      method,
+      params,
+      sessionId
+    );
+  }
+
   async start() {
     if (this.recording) return;
 
@@ -362,20 +380,20 @@ class HarRecorder {
     };
 
     try {
-      await dbg.sendCommand(
+      await this._sendCommand(
         'Network.enable',
         {
           ...baseOptions,
           enableDurableMessages: true
         },
-        sessionId || undefined
+        sessionId
       );
     } catch {
       // Older Chromium builds may not expose durable messages.
-      await dbg.sendCommand(
+      await this._sendCommand(
         'Network.enable',
         baseOptions,
-        sessionId || undefined
+        sessionId
       );
     }
   }
@@ -1238,7 +1256,7 @@ class HarRecorder {
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        return await this.webContents.debugger.sendCommand(
+        return await this._sendCommand(
           'Network.getResponseBody',
           { requestId },
           sessionId
@@ -1258,8 +1276,7 @@ class HarRecorder {
   }
 
   _captureRequestPostData(entry, requestId, sessionId) {
-    const promise = this.webContents.debugger
-      .sendCommand(
+    const promise = this._sendCommand(
         'Network.getRequestPostData',
         { requestId },
         sessionId

@@ -214,3 +214,43 @@ test('merge preserves body capture failure diagnostics from CDP', () => {
     'No resource with given identifier found'
   );
 });
+
+
+test('root CDP commands omit the session id argument', async () => {
+  const calls = [];
+  const fakeWebContents = {
+    debugger: {
+      sendCommand(...args) {
+        calls.push(args);
+        return Promise.resolve({ ok: true });
+      }
+    }
+  };
+
+  const recorder = new (require('../src/har-recorder').HarRecorder)(
+    fakeWebContents
+  );
+
+  await recorder._sendCommand(
+    'Network.getResponseBody',
+    { requestId: '123' },
+    undefined
+  );
+
+  await recorder._sendCommand(
+    'Network.getResponseBody',
+    { requestId: '456' },
+    ''
+  );
+
+  await recorder._sendCommand(
+    'Network.getResponseBody',
+    { requestId: '789' },
+    'child-session'
+  );
+
+  assert.equal(calls[0].length, 2);
+  assert.equal(calls[1].length, 2);
+  assert.equal(calls[2].length, 3);
+  assert.equal(calls[2][2], 'child-session');
+});

@@ -6,6 +6,11 @@ const FULL_HAR_BODY_LIMIT = 32 * 1024 * 1024;
 const CDP_TOTAL_BUFFER = 512 * 1024 * 1024;
 const CDP_RESOURCE_BUFFER = 128 * 1024 * 1024;
 const CDP_POST_BUFFER = 64 * 1024 * 1024;
+const FETCH_RESPONSE_PATTERNS = [
+  { urlPattern: '*', resourceType: 'XHR', requestStage: 'Response' },
+  { urlPattern: '*', resourceType: 'Fetch', requestStage: 'Response' },
+  { urlPattern: '*', resourceType: 'Other', requestStage: 'Response' }
+];
 
 function headersToArray(headers = {}) {
   const result = [];
@@ -263,6 +268,8 @@ class HarRecorder {
 
     this.webSockets = new Map();
     this.pendingBodies = new Set();
+    this.fetchBodies = new Map();
+    this.fetchEnabledSessions = new Set();
 
     this.totalBytes = 0;
     this.wsFrames = 0;
@@ -326,27 +333,15 @@ class HarRecorder {
 
   async _enableCdp() {
     const dbg = this.webContents.debugger;
-    const networkOptions = {
-      maxTotalBufferSize: CDP_TOTAL_BUFFER,
-      maxResourceBufferSize: CDP_RESOURCE_BUFFER,
-      maxPostDataSize: CDP_POST_BUFFER
-    };
 
-    await dbg.sendCommand(
-      'Network.enable',
-      networkOptions
-    );
+    await this._enableCaptureDomains(null);
 
     const existingSessions =
       this.cdpSessionsProvider?.() || [];
 
     for (const sessionId of existingSessions) {
       try {
-        await dbg.sendCommand(
-          'Network.enable',
-          networkOptions,
-          sessionId
-        );
+        await this._enableCaptureDomains(sessionId);
       } catch {
         // One stale/detached child target must not disable root capture.
       }
@@ -365,6 +360,33 @@ class HarRecorder {
     } catch {
       // Existing sessions above + webRequest remain active fallbacks.
     }
+  }
+
+  async _enableCaptureDomains(sessionId) {
+    const dbg = this.webContents.debugger;
+    const networkOptions = {
+      maxTotalBufferSize: CDP_TOTAL_BUFFER,
+      maxResourceBufferSize: CDP_RESOURCE_BUFFER,
+      maxPostDataSize: CDP_POST_BUFFER
+    };
+
+    await dbg.sendCommand(
+      'Network.enable',
+      networkOptions,
+      sessionId || undefined
+    );
+
+    await dbg.sendCommand(
+      'Fetch.enable',
+      {
+        patterns: FETCH_RESPONSE_PATTERNS
+      },
+      sessionId || undefined
+    );
+
+    this.fetchEnabledSessions.add(
+      sessionId || 'root'
+    );
   }
 
   async stop() {
@@ -399,6 +421,8 @@ class HarRecorder {
 
     const dbg = this.webContents.debugger;
 
+    await this._disableFetchDomains();
+
     try {
       dbg.removeListener('message', this._messageListener);
       dbg.removeListener('detach', this._detachListener);
@@ -417,6 +441,26 @@ class HarRecorder {
     this.stopping = false;
     this.onUpdate();
     return this.toJSON();
+  }
+
+  async _disableFetchDomains() {
+    const dbg = this.webContents.debugger;
+    const sessions = [...this.fetchEnabledSessions];
+
+    for (const key of sessions) {
+      const sessionId =
+        key === 'root' ? undefined : key;
+
+      try {
+        await dbg.sendCommand(
+          'Fetch.disable',
+          {},
+          sessionId
+        );
+      } catch {}
+    }
+
+    this.fetchEnabledSessions.clear();
   }
 
   async _waitForPendingBodies() {
@@ -750,21 +794,26 @@ class HarRecorder {
 
     if (method === 'Target.attachedToTarget') {
       const childSessionId = params?.sessionId;
+
       if (childSessionId) {
-        void this.webContents.debugger.sendCommand(
-          'Network.enable',
-          {
-            maxTotalBufferSize: CDP_TOTAL_BUFFER,
-            maxResourceBufferSize: CDP_RESOURCE_BUFFER,
-            maxPostDataSize: CDP_POST_BUFFER
-          },
-          childSessionId
-        ).catch(() => {});
+        const promise =
+          this._enableCaptureDomains(childSessionId)
+            .catch(() => {});
+
+        this.pendingBodies.add(promise);
+
+        promise.finally(() => {
+          this.pendingBodies.delete(promise);
+        });
       }
+
       return;
     }
 
     switch (method) {
+      case 'Fetch.requestPaused':
+        this._fetchRequestPaused(params, sessionId);
+        break;
       case 'Network.requestWillBeSent':
         this._requestWillBeSent(params, sessionId);
         break;
@@ -798,6 +847,180 @@ class HarRecorder {
       default:
         break;
     }
+  }
+
+  _fetchRequestPaused(params, sessionId) {
+    const fetchRequestId = params?.requestId;
+    if (!fetchRequestId) return;
+
+    const networkId = params?.networkId;
+    const key = networkId
+      ? this._cdpKey(networkId, sessionId)
+      : null;
+
+    const activeEntry =
+      key ? this.active.get(key) : null;
+
+    const probeEntry =
+      activeEntry || {
+        request: {
+          method: params.request?.method || 'GET',
+          url: params.request?.url || ''
+        },
+        response: {
+          status: params.responseStatusCode || 0,
+          content: {}
+        },
+        __resourceType:
+          params.resourceType || 'Other'
+      };
+
+    const responseStage =
+      params.responseStatusCode !== undefined ||
+      params.responseErrorReason !== undefined;
+
+    const shouldCapture =
+      responseStage &&
+      isGameOnlyEntry(probeEntry) &&
+      !isBodylessResponse(probeEntry);
+
+    const promise = (async () => {
+      let captured = null;
+      let captureError = null;
+
+      try {
+        if (shouldCapture) {
+          captured =
+            await this.webContents.debugger.sendCommand(
+              'Fetch.getResponseBody',
+              { requestId: fetchRequestId },
+              sessionId
+            );
+
+          const record = {
+            body: captured?.body ?? '',
+            base64Encoded:
+              Boolean(captured?.base64Encoded),
+            capturedAt: Date.now()
+          };
+
+          if (key) {
+            this.fetchBodies.set(key, record);
+          }
+
+          if (
+            activeEntry &&
+            !activeEntry.__finalized
+          ) {
+            this._applyCapturedBody(
+              activeEntry,
+              record,
+              'fetch'
+            );
+          }
+        }
+      } catch (error) {
+        captureError =
+          error?.message || String(error);
+
+        if (
+          activeEntry &&
+          !activeEntry.__finalized &&
+          activeEntry.response?.content?.text === undefined
+        ) {
+          activeEntry.response.content._fetchBodyCaptureError =
+            captureError;
+        }
+      } finally {
+        try {
+          await this.webContents.debugger.sendCommand(
+            'Fetch.continueRequest',
+            { requestId: fetchRequestId },
+            sessionId
+          );
+        } catch (continueError) {
+          try {
+            await this.webContents.debugger.sendCommand(
+              'Fetch.continueResponse',
+              { requestId: fetchRequestId },
+              sessionId
+            );
+          } catch {
+            if (
+              activeEntry &&
+              !activeEntry.__finalized
+            ) {
+              activeEntry.response.content._fetchContinueError =
+                continueError?.message ||
+                String(continueError);
+            }
+          }
+        }
+      }
+    })();
+
+    this.pendingBodies.add(promise);
+
+    promise.finally(() => {
+      this.pendingBodies.delete(promise);
+    });
+  }
+
+  _applyCapturedBody(entry, record, source) {
+    if (!entry || !record) return;
+
+    entry.response.content.text =
+      record.body ?? '';
+
+    if (record.base64Encoded) {
+      entry.response.content.encoding =
+        'base64';
+    } else {
+      delete entry.response.content.encoding;
+    }
+
+    entry.response.content._bodyCaptureStatus =
+      record.body === ''
+        ? 'empty'
+        : 'captured';
+
+    entry.response.content._bodyCaptureSource =
+      source;
+
+    const size =
+      record.base64Encoded
+        ? Math.floor(
+            String(record.body || '').length * 0.75
+          )
+        : utf8Size(record.body || '');
+
+    if (
+      !Number.isFinite(
+        entry.response.content.size
+      ) ||
+      entry.response.content.size <= 0
+    ) {
+      entry.response.content.size = size;
+    }
+  }
+
+  _applyFetchBodyIfAvailable(entry) {
+    const record =
+      this.fetchBodies.get(entry.__requestId);
+
+    if (!record) return false;
+
+    this.fetchBodies.delete(
+      entry.__requestId
+    );
+
+    this._applyCapturedBody(
+      entry,
+      record,
+      'fetch'
+    );
+
+    return true;
   }
 
   _cdpKey(requestId, sessionId) {
@@ -870,9 +1093,25 @@ class HarRecorder {
   }
 
   _responseReceived(params, sessionId) {
-    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
+    const entry =
+      this.active.get(
+        this._cdpKey(
+          params.requestId,
+          sessionId
+        )
+      );
+
     if (!entry) return;
-    this._applyResponse(entry, params.response, params.timestamp);
+
+    this._applyResponse(
+      entry,
+      params.response,
+      params.timestamp
+    );
+
+    this._applyFetchBodyIfAvailable(
+      entry
+    );
   }
 
   _applyResponse(entry, response = {}, timestamp) {
@@ -911,6 +1150,14 @@ class HarRecorder {
       }
     }
 
+    if (
+      entry.response.content.text !== undefined ||
+      this._applyFetchBodyIfAvailable(entry)
+    ) {
+      this._finalize(entry);
+      return;
+    }
+
     if (isBodylessResponse(entry)) {
       entry.response.content._bodyCaptureStatus = 'not-applicable';
       this._finalize(entry);
@@ -943,24 +1190,15 @@ class HarRecorder {
           throw new Error('CDP returned no response body');
         }
 
-        entry.response.content.text =
-          result.body ?? '';
-
-        if (result.base64Encoded) {
-          entry.response.content.encoding = 'base64';
-        }
-
-        entry.response.content._bodyCaptureStatus =
-          result.body === ''
-            ? 'empty'
-            : 'captured';
-
-        if (!entry.response.content.size) {
-          entry.response.content.size =
-            result.base64Encoded
-              ? Math.floor((result.body || '').length * 0.75)
-              : utf8Size(result.body || '');
-        }
+        this._applyCapturedBody(
+          entry,
+          {
+            body: result.body ?? '',
+            base64Encoded:
+              Boolean(result.base64Encoded)
+          },
+          'network'
+        );
       })
       .catch((error) => {
         entry.response.content._bodyUnavailable = true;

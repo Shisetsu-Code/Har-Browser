@@ -906,8 +906,7 @@ class HarRecorder {
 
     this.streamBodies.set(key, record);
 
-    const promise = this.webContents.debugger
-      .sendCommand(
+    const promise = this._sendCommand(
         'Network.streamResourceContent',
         { requestId },
         sessionId

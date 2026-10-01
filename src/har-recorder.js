@@ -203,15 +203,11 @@ function mergeEntry(base, richer) {
     if ((!out.response.headers || out.response.headers.length === 0) && richer.response.headers?.length) {
       out.response.headers = richer.response.headers;
     }
-    if (richer.response.content?.text !== undefined) {
-      out.response.content = { ...out.response.content, ...richer.response.content };
-    } else {
-      if (!out.response.content.mimeType && richer.response.content?.mimeType) {
-        out.response.content.mimeType = richer.response.content.mimeType;
-      }
-      if (!out.response.content.size && richer.response.content?.size) {
-        out.response.content.size = richer.response.content.size;
-      }
+    if (richer.response.content) {
+      out.response.content = {
+        ...out.response.content,
+        ...richer.response.content
+      };
     }
   }
 
@@ -402,6 +398,10 @@ class HarRecorder {
     // after the server response but before the HAR is frozen.
     await this._waitForNetworkQuiet();
 
+    // Disable Fetch while the listener is still active. This guarantees no
+    // response can remain paused after capture stops.
+    await this._disableFetchDomains();
+
     this.recording = false;
     this.networkTap?.unregister(this.webContents.id, this);
 
@@ -420,8 +420,6 @@ class HarRecorder {
     }
 
     const dbg = this.webContents.debugger;
-
-    await this._disableFetchDomains();
 
     try {
       dbg.removeListener('message', this._messageListener);
@@ -526,7 +524,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.5.1'
+          version: '0.5.2'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),

@@ -362,3 +362,161 @@ test('opaque binary WebSocket payload stays preserved as base64', () => {
   assert.equal(decoded.base64, raw);
   assert.equal(decoded.byteLength, 5);
 });
+
+
+test('captures frames from a WebSocket opened before REC', () => {
+  const fakeWebContents = {
+    debugger: {
+      sendCommand() {
+        return Promise.resolve({});
+      }
+    },
+    getTitle() {
+      return 'WS game';
+    },
+    getURL() {
+      return 'https://game.test';
+    }
+  };
+
+  const recorder = new HarRecorder(
+    fakeWebContents,
+    {
+      gameOnly: true,
+      webSocketSnapshotProvider: () => [
+        {
+          key: 'root:ws-1',
+          requestId: 'ws-1',
+          sessionId: null,
+          url: 'wss://game.test/socket',
+          requestHeaders: {
+            Origin: 'https://game.test'
+          },
+          responseHeaders: {
+            Upgrade: 'websocket'
+          },
+          status: 101,
+          statusText: 'Switching Protocols',
+          closed: false
+        }
+      ]
+    }
+  );
+
+  recorder.startedAt =
+    new Date('2026-10-02T00:00:00.000Z');
+
+  recorder.recording = true;
+  recorder._seedExistingWebSockets();
+
+  recorder._webSocketFrame(
+    {
+      requestId: 'ws-1',
+      timestamp: 100,
+      response: {
+        opcode: 1,
+        mask: true,
+        payloadData:
+          '{"command":"spin","requestId":"r1","bet":25}'
+      }
+    },
+    'sent'
+  );
+
+  recorder._webSocketFrame(
+    {
+      requestId: 'ws-1',
+      timestamp: 100.1,
+      response: {
+        opcode: 1,
+        mask: false,
+        payloadData:
+          '{"requestId":"r1","win":50,"balance":1000}'
+      }
+    },
+    'received'
+  );
+
+  const entry =
+    recorder.active.get('root:ws-1');
+
+  assert.ok(entry);
+  assert.equal(
+    entry.request.url,
+    'wss://game.test/socket'
+  );
+
+  recorder._finalize(entry);
+
+  const json = recorder.toJSON();
+
+  assert.equal(json.log.entries.length, 1);
+  assert.equal(
+    json.log.entries[0]._webSocketFrames.length,
+    2
+  );
+
+  assert.equal(
+    json.log.entries[0]._webSocketTransactions.length,
+    1
+  );
+
+  assert.equal(
+    json.log.entries[0]._webSocketTransactions[0].kind,
+    'spin'
+  );
+});
+
+test('late WebSocket frame creates a synthetic HAR entry', () => {
+  const fakeWebContents = {
+    debugger: {
+      sendCommand() {
+        return Promise.resolve({});
+      }
+    },
+    getTitle() {
+      return 'Late WS';
+    },
+    getURL() {
+      return 'https://game.test';
+    }
+  };
+
+  const recorder = new HarRecorder(
+    fakeWebContents,
+    { gameOnly: true }
+  );
+
+  recorder.startedAt = new Date();
+  recorder.recording = true;
+
+  recorder._webSocketFrame(
+    {
+      requestId: 'unknown-ws',
+      timestamp: 1,
+      response: {
+        opcode: 1,
+        payloadData:
+          '{"action":"spin","roundId":"x1"}'
+      }
+    },
+    'sent'
+  );
+
+  const entry =
+    recorder.active.get(
+      'root:unknown-ws'
+    );
+
+  assert.ok(entry);
+  assert.equal(
+    entry.__resourceType,
+    'WebSocket'
+  );
+  assert.equal(
+    entry._webSocketUnknownUrl,
+    true
+  );
+  assert.equal(recorder.wsFrames, 1);
+  assert.equal(recorder.wsSpins, 1);
+});

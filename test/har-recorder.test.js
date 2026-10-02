@@ -16,7 +16,8 @@ const {
   parseWebSocketText,
   decodeWebSocketPayload,
   extractWebSocketCorrelation,
-  classifyWebSocketGameEvent
+  classifyWebSocketGameEvent,
+  looksLikeSpinResult
 } = require('../src/har-recorder');
 
 test('headersToArray converts CDP headers to HAR headers', () => {
@@ -520,4 +521,163 @@ test('late WebSocket frame creates a synthetic HAR entry', () => {
   );
   assert.equal(recorder.wsFrames, 1);
   assert.equal(recorder.wsSpins, 1);
+});
+
+
+test('decodes short-prefix JSON used by game WebSockets', () => {
+  const decoded =
+    parseWebSocketText(
+      'A/u2{"key":"","type":"1","data":"10,0,0"}'
+    );
+
+  assert.equal(
+    decoded.format,
+    'prefixed-json'
+  );
+
+  assert.equal(
+    decoded.prefix,
+    'A/u2'
+  );
+
+  assert.deepEqual(
+    decoded.parsed,
+    {
+      key: '',
+      type: '1',
+      data: '10,0,0'
+    }
+  );
+});
+
+test('recognizes reel-style WebSocket responses as spin results', () => {
+  const result = {
+    type: 3,
+    g: 276191046,
+    b: 9610,
+    w: 80,
+    r1: '12345',
+    r2: '23456',
+    r3: '34567',
+    r4: '45678',
+    r5: '56789'
+  };
+
+  assert.equal(
+    looksLikeSpinResult(result),
+    true
+  );
+
+  const event =
+    classifyWebSocketGameEvent(
+      {
+        format: 'json',
+        parsed: result,
+        opcodeName: 'text'
+      },
+      'received'
+    );
+
+  assert.equal(
+    event.kind,
+    'spin-result'
+  );
+});
+
+test('pairs generic prefixed game command with inferred spin result', () => {
+  const fakeWebContents = {
+    debugger: {
+      sendCommand() {
+        return Promise.resolve({});
+      }
+    },
+    getTitle() {
+      return '1Spin4Win';
+    },
+    getURL() {
+      return 'https://game.test';
+    }
+  };
+
+  const recorder =
+    new HarRecorder(
+      fakeWebContents,
+      {
+        gameOnly: true,
+        webSocketSnapshotProvider: () => [
+          {
+            key: 'root:ws-1',
+            requestId: 'ws-1',
+            sessionId: null,
+            url: 'wss://game.test/games',
+            status: 101,
+            closed: false
+          }
+        ]
+      }
+    );
+
+  recorder.startedAt = new Date();
+  recorder.recording = true;
+  recorder._seedExistingWebSockets();
+
+  recorder._webSocketFrame(
+    {
+      requestId: 'ws-1',
+      timestamp: 10,
+      response: {
+        opcode: 1,
+        payloadData:
+          'A/u2{"key":"","type":"1","data":"10,0,0"}'
+      }
+    },
+    'sent'
+  );
+
+  recorder._webSocketFrame(
+    {
+      requestId: 'ws-1',
+      timestamp: 10.24,
+      response: {
+        opcode: 1,
+        payloadData:
+          '{"type":3,"g":1,"b":1000,"w":20,"r1":"111","r2":"222","r3":"333","r4":"444","r5":"555"}'
+      }
+    },
+    'received'
+  );
+
+  assert.equal(
+    recorder.wsTransactions,
+    1
+  );
+
+  assert.equal(
+    recorder.wsSpins,
+    1
+  );
+
+  const entry =
+    recorder.active.get(
+      'root:ws-1'
+    );
+
+  recorder._finalize(entry);
+
+  const json =
+    recorder.toJSON();
+
+  assert.equal(
+    json.log.entries[0]
+      ._webSocketTransactions[0]
+      .kind,
+    'spin'
+  );
+
+  assert.equal(
+    json.log.entries[0]
+      ._webSocketSummary
+      .spinRequests,
+    1
+  );
 });

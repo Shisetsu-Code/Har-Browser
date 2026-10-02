@@ -109,8 +109,13 @@ function render() {
             ? 'READY'
             : 'IDLE';
 
+    const wsLabel =
+      tab.stats?.wsFrames
+        ? ` · WS ${tab.stats.wsFrames}/${tab.stats.wsSpins || 0} spins`
+        : '';
+
     statsEl.textContent =
-      `${loadLabel} · ${tab.stats?.requests || 0} req · ${humanBytes(tab.stats?.bytes || 0)} · ${tab.runtimeFrames || 0}F/${tab.runtimeTargets || 0}T`;
+      `${loadLabel} · ${tab.stats?.requests || 0} req · ${humanBytes(tab.stats?.bytes || 0)}${wsLabel} · ${tab.runtimeFrames || 0}F/${tab.runtimeTargets || 0}T`;
 
     if (tab.loadState === 'failed') {
       setStatus(tab.loadError || 'Load failed');

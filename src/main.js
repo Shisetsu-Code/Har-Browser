@@ -156,7 +156,10 @@ function serializeTab(tab) {
       recording: false,
       requests: 0,
       bytes: 0,
-      wsFrames: 0
+      wsFrames: 0,
+      wsGameEvents: 0,
+      wsSpins: 0,
+      wsTransactions: 0
     }
   };
 }

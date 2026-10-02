@@ -898,7 +898,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.5.4'
+          version: '0.6.1'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),

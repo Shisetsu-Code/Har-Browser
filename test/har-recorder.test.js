@@ -11,7 +11,11 @@ const {
   isGameOnlyEntry,
   isBodylessResponse,
   bodyCaptureLimit,
-  mergeEntry
+  mergeEntry,
+  parseWebSocketText,
+  decodeWebSocketPayload,
+  extractWebSocketCorrelation,
+  classifyWebSocketGameEvent
 } = require('../src/har-recorder');
 
 test('headersToArray converts CDP headers to HAR headers', () => {
@@ -253,4 +257,108 @@ test('root CDP commands omit the session id argument', async () => {
   assert.equal(calls[1].length, 2);
   assert.equal(calls[2].length, 3);
   assert.equal(calls[2][2], 'child-session');
+});
+
+
+test('decodes JSON WebSocket spin messages', () => {
+  const decoded = decodeWebSocketPayload(
+    JSON.stringify({
+      command: 'spin',
+      bet: 25,
+      requestId: 'abc-123'
+    }),
+    1
+  );
+
+  assert.equal(decoded.format, 'json');
+  assert.equal(decoded.parsed.command, 'spin');
+
+  const event =
+    classifyWebSocketGameEvent(
+      decoded,
+      'sent'
+    );
+
+  assert.equal(event.kind, 'spin');
+  assert.equal(event.correlationId, 'abc-123');
+});
+
+test('decodes Socket.IO game events', () => {
+  const decoded =
+    parseWebSocketText(
+      '42["spin",{"bet":10,"roundId":"r-7"}]'
+    );
+
+  assert.equal(decoded.format, 'socket.io');
+  assert.equal(decoded.eventName, 'spin');
+  assert.deepEqual(decoded.eventData, {
+    bet: 10,
+    roundId: 'r-7'
+  });
+
+  const correlation =
+    extractWebSocketCorrelation(decoded);
+
+  assert.deepEqual(correlation, {
+    key: 'roundId',
+    value: 'r-7'
+  });
+
+  const event =
+    classifyWebSocketGameEvent(
+      decoded,
+      'sent'
+    );
+
+  assert.equal(event.kind, 'spin');
+});
+
+test('decodes binary WebSocket JSON carried as base64', () => {
+  const raw =
+    Buffer.from(
+      '{"action":"buyFeature","transactionId":"tx-9"}',
+      'utf8'
+    ).toString('base64');
+
+  const decoded =
+    decodeWebSocketPayload(raw, 2);
+
+  assert.equal(
+    decoded.encoding,
+    'base64->utf8'
+  );
+
+  assert.equal(
+    decoded.parsed.transactionId,
+    'tx-9'
+  );
+
+  const event =
+    classifyWebSocketGameEvent(
+      decoded,
+      'sent'
+    );
+
+  assert.equal(
+    event.kind,
+    'buy-feature'
+  );
+});
+
+test('opaque binary WebSocket payload stays preserved as base64', () => {
+  const raw =
+    Buffer.from([
+      0x00,
+      0xff,
+      0x01,
+      0xfe,
+      0x02
+    ]).toString('base64');
+
+  const decoded =
+    decodeWebSocketPayload(raw, 2);
+
+  assert.equal(decoded.format, 'binary');
+  assert.equal(decoded.base64, raw);
+  assert.equal(decoded.byteLength, 5);
 });

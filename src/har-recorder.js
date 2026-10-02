@@ -1859,13 +1859,18 @@ class HarRecorder {
       let matchIndex = -1;
       let matchType = '';
 
-      if (gameEvent?.correlationId) {
+      const receivedCorrelation =
+        gameEvent?.correlationId ||
+        extractWebSocketCorrelation(decoded)?.value ||
+        null;
+
+      if (receivedCorrelation) {
         matchIndex =
           ws.pendingGameRequests.findIndex(
             (pending) =>
               pending.correlationId &&
               pending.correlationId ===
-                gameEvent.correlationId
+                receivedCorrelation
           );
 
         if (matchIndex >= 0) {

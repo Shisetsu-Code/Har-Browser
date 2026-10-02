@@ -903,6 +903,8 @@ async function startRecording(
       gameOnly: tab.gameOnly,
       cdpSessionsProvider: () =>
         tab.runtimeController?.getSessionIds?.() || [],
+      webSocketSnapshotProvider: () =>
+        tab.runtimeController?.getWebSocketSnapshot?.() || [],
       onUpdate: scheduleState
     }
   );

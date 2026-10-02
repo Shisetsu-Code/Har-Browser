@@ -128,6 +128,31 @@ function parseWebSocketText(text) {
     return result;
   } catch {}
 
+  // Some game protocols prepend a short transport/session marker before an
+  // otherwise normal JSON payload (for example "A/u2{...}"). Preserve the
+  // prefix and decode the JSON without provider-specific hardcoding.
+  const objectStart = trimmed.indexOf('{');
+  const arrayStart = trimmed.indexOf('[');
+  const jsonStart =
+    objectStart < 0
+      ? arrayStart
+      : arrayStart < 0
+        ? objectStart
+        : Math.min(objectStart, arrayStart);
+
+  if (jsonStart > 0 && jsonStart <= 32) {
+    try {
+      const parsed =
+        JSON.parse(trimmed.slice(jsonStart));
+
+      result.format = 'prefixed-json';
+      result.prefix =
+        trimmed.slice(0, jsonStart);
+      result.parsed = parsed;
+      return result;
+    } catch {}
+  }
+
   // Socket.IO EVENT packet: 42["event", {...}]
   if (trimmed.startsWith('42')) {
     try {
@@ -358,6 +383,61 @@ function extractWebSocketCorrelation(decoded) {
   return walk(decoded?.parsed);
 }
 
+function looksLikeSpinResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const keys =
+    Object.keys(value).map(
+      (key) => key.toLowerCase()
+    );
+
+  const reelKeys =
+    keys.filter((key) =>
+      /^r\d+$/.test(key)
+    );
+
+  const hasGridLike =
+    reelKeys.length >= 3 ||
+    keys.some((key) =>
+      ['reels', 'symbols', 'grid', 'matrix', 'board'].includes(key)
+    );
+
+  const hasWinLike =
+    keys.some((key) =>
+      [
+        'w',
+        'win',
+        'wins',
+        'totalwin',
+        'total_win',
+        'payout',
+        'award'
+      ].includes(key)
+    );
+
+  const hasBalanceOrRound =
+    keys.some((key) =>
+      [
+        'b',
+        'balance',
+        'g',
+        'round',
+        'roundid',
+        'round_id',
+        'spinid',
+        'spin_id'
+      ].includes(key)
+    );
+
+  return (
+    hasGridLike &&
+    hasWinLike &&
+    hasBalanceOrRound
+  );
+}
+
 function classifyWebSocketGameEvent(decoded, direction) {
   if (!decoded) return null;
 
@@ -373,6 +453,24 @@ function classifyWebSocketGameEvent(decoded, direction) {
       kind: 'heartbeat',
       direction,
       hints: []
+    };
+  }
+
+  if (
+    direction === 'received' &&
+    looksLikeSpinResult(decoded.parsed)
+  ) {
+    const correlation =
+      extractWebSocketCorrelation(decoded);
+
+    return {
+      kind: 'spin-result',
+      direction,
+      hints: ['reel-result'],
+      correlationId:
+        correlation?.value,
+      correlationKey:
+        correlation?.key
     };
   }
 
@@ -462,6 +560,7 @@ function isStructuredWebSocketPayload(decoded) {
     (
       decoded.parsed !== undefined ||
       decoded.format === 'json' ||
+      decoded.format === 'prefixed-json' ||
       decoded.format === 'socket.io' ||
       decoded.format === 'engine.io' ||
       decoded.format === 'querystring'
@@ -905,7 +1004,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.6.2'
+          version: '0.6.3'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),
@@ -2144,15 +2243,24 @@ class HarRecorder {
 
     if (
       direction === 'sent' &&
-      gameEvent &&
-      gameEvent.kind !== 'heartbeat'
+      gameEvent?.kind !== 'heartbeat' &&
+      (
+        gameEvent ||
+        isStructuredWebSocketPayload(decoded)
+      )
     ) {
+      const correlation =
+        gameEvent?.correlationId ||
+        extractWebSocketCorrelation(decoded)?.value ||
+        null;
+
       ws.pendingGameRequests.push({
         frameId: frame.id,
         timestamp: frame.timestamp,
-        kind: gameEvent.kind,
+        kind:
+          gameEvent?.kind || 'ws-command',
         correlationId:
-          gameEvent.correlationId || null
+          correlation
       });
 
       if (
@@ -2236,8 +2344,19 @@ class HarRecorder {
             Number(pending.timestamp)
           ) * 1000;
 
+        const responseKind =
+          gameEvent?.kind || null;
+
+        const resolvedKind =
+          responseKind === 'spin-result'
+            ? 'spin'
+            : pending.kind === 'ws-command' &&
+                responseKind
+              ? responseKind
+              : pending.kind;
+
         const transaction = {
-          kind: pending.kind,
+          kind: resolvedKind,
           requestFrameId:
             pending.frameId,
           responseFrameId:
@@ -2272,10 +2391,39 @@ class HarRecorder {
         if (requestFrame) {
           requestFrame._pairedWith =
             frame.id;
+
+          if (
+            resolvedKind === 'spin' &&
+            !['spin', 'free-spin'].includes(
+              requestFrame._gameEvent?.kind
+            )
+          ) {
+            requestFrame._gameEvent = {
+              ...(requestFrame._gameEvent || {}),
+              kind: 'spin',
+              direction: 'sent',
+              inferredBy:
+                'paired-spin-result',
+              correlationId:
+                pending.correlationId || undefined
+            };
+
+            this.wsSpins += 1;
+            this.wsGameEvents += 1;
+          }
         }
 
         frame._pairedWith =
           pending.frameId;
+
+        if (
+          gameEvent?.kind === 'spin-result'
+        ) {
+          frame._gameEvent = {
+            ...gameEvent,
+            transactionKind: 'spin'
+          };
+        }
 
         this.wsTransactions += 1;
       }
@@ -2384,5 +2532,6 @@ module.exports = {
   decodeWebSocketPayload,
   extractWebSocketCorrelation,
   classifyWebSocketGameEvent,
+  looksLikeSpinResult,
   isStructuredWebSocketPayload
 };

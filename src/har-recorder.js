@@ -609,6 +609,10 @@ class HarRecorder {
       typeof options.cdpSessionsProvider === 'function'
         ? options.cdpSessionsProvider
         : () => [];
+    this.webSocketSnapshotProvider =
+      typeof options.webSocketSnapshotProvider === 'function'
+        ? options.webSocketSnapshotProvider
+        : () => [];
     this.gameOnly = options.gameOnly !== false;
     this.maxBodyBytes = options.maxBodyBytes ?? FULL_HAR_BODY_LIMIT;
     this.maxProtocolBodyBytes =
@@ -697,6 +701,9 @@ class HarRecorder {
 
       dbg.on('message', this._messageListener);
       dbg.on('detach', this._detachListener);
+
+      // Seed sockets that were already connected before REC was pressed.
+      this._seedExistingWebSockets();
 
       // REC is not considered started until Network is enabled. This removes
       // the race where the user spins immediately after pressing REC.
@@ -898,7 +905,7 @@ class HarRecorder {
         version: '1.2',
         creator: {
           name: 'HAR Browser',
-          version: '0.6.1'
+          version: '0.6.2'
         },
         pages: [{
           startedDateTime: (this.startedAt || new Date()).toISOString(),
@@ -1713,72 +1720,382 @@ class HarRecorder {
     this._finalize(entry);
   }
 
+  _webSocketMeta(requestId, sessionId) {
+    const key =
+      this._cdpKey(
+        requestId,
+        sessionId
+      );
+
+    const snapshot =
+      this.webSocketSnapshotProvider?.() || [];
+
+    return (
+      snapshot.find(
+        (socket) =>
+          socket?.key === key
+      ) ||
+      snapshot.find(
+        (socket) =>
+          String(socket?.requestId) ===
+            String(requestId) &&
+          String(socket?.sessionId || '') ===
+            String(sessionId || '')
+      ) ||
+      null
+    );
+  }
+
+  _ensureWebSocketState(requestId, sessionId, meta = null) {
+    const key =
+      this._cdpKey(
+        requestId,
+        sessionId
+      );
+
+    let ws =
+      this.webSockets.get(key);
+
+    if (!ws) {
+      const snapshotMeta =
+        meta ||
+        this._webSocketMeta(
+          requestId,
+          sessionId
+        ) ||
+        {};
+
+      ws = {
+        url:
+          snapshotMeta.url || '',
+        frames: [],
+        transactions: [],
+        pendingGameRequests: [],
+        nextFrameId: 1,
+        lateAttach:
+          !snapshotMeta.url,
+        requestHeaders:
+          snapshotMeta.requestHeaders || {},
+        responseHeaders:
+          snapshotMeta.responseHeaders || {},
+        status:
+          snapshotMeta.status || 0,
+        statusText:
+          snapshotMeta.statusText || ''
+      };
+
+      this.webSockets.set(
+        key,
+        ws
+      );
+    } else if (meta) {
+      if (meta.url) ws.url = meta.url;
+
+      if (
+        meta.requestHeaders &&
+        Object.keys(meta.requestHeaders).length
+      ) {
+        ws.requestHeaders =
+          meta.requestHeaders;
+      }
+
+      if (
+        meta.responseHeaders &&
+        Object.keys(meta.responseHeaders).length
+      ) {
+        ws.responseHeaders =
+          meta.responseHeaders;
+      }
+
+      if (meta.status) {
+        ws.status = meta.status;
+      }
+
+      if (meta.statusText) {
+        ws.statusText =
+          meta.statusText;
+      }
+
+      if (meta.url) {
+        ws.lateAttach = false;
+      }
+    }
+
+    return ws;
+  }
+
+  _ensureWebSocketEntry(requestId, sessionId, meta = null) {
+    const key =
+      this._cdpKey(
+        requestId,
+        sessionId
+      );
+
+    let entry =
+      this.active.get(key);
+
+    const ws =
+      this._ensureWebSocketState(
+        requestId,
+        sessionId,
+        meta
+      );
+
+    if (entry) {
+      if (
+        ws.url &&
+        (
+          !entry.request.url ||
+          entry.request.url.startsWith(
+            'ws://unknown.invalid/'
+          )
+        )
+      ) {
+        entry.request.url = ws.url;
+        entry.request.queryString =
+          queryString(ws.url);
+        delete entry._webSocketUnknownUrl;
+      }
+
+      return entry;
+    }
+
+    const url =
+      ws.url ||
+      `ws://unknown.invalid/${encodeURIComponent(
+        String(requestId)
+      )}`;
+
+    entry = {
+      pageref: 'page_1',
+      startedDateTime:
+        (this.startedAt || new Date())
+          .toISOString(),
+      time: 0,
+      request: {
+        method: 'GET',
+        url,
+        httpVersion: '',
+        cookies: [],
+        headers:
+          headersToArray(
+            ws.requestHeaders || {}
+          ),
+        queryString:
+          queryString(url),
+        headersSize: -1,
+        bodySize: 0
+      },
+      response: responseTemplate(),
+      cache: {},
+      timings: timingsTemplate(),
+      __requestId: key,
+      __cdpRequestId:
+        requestId,
+      __startTs: null,
+      __responseTs: null,
+      __endTs: null,
+      __resourceType:
+        'WebSocket',
+      __finalized: false,
+      __source: 'cdp',
+      _webSocketLateAttach: true
+    };
+
+    if (!ws.url) {
+      entry._webSocketUnknownUrl =
+        true;
+    }
+
+    if (
+      ws.responseHeaders &&
+      Object.keys(ws.responseHeaders).length
+    ) {
+      entry.response.headers =
+        headersToArray(
+          ws.responseHeaders
+        );
+    }
+
+    if (ws.status) {
+      entry.response.status =
+        ws.status;
+    }
+
+    if (ws.statusText) {
+      entry.response.statusText =
+        ws.statusText;
+    }
+
+    this.active.set(
+      key,
+      entry
+    );
+
+    return entry;
+  }
+
+  _seedExistingWebSockets() {
+    const snapshot =
+      this.webSocketSnapshotProvider?.() || [];
+
+    for (const socket of snapshot) {
+      if (
+        !socket?.requestId ||
+        socket.closed
+      ) {
+        continue;
+      }
+
+      this._ensureWebSocketState(
+        socket.requestId,
+        socket.sessionId,
+        socket
+      );
+
+      this._ensureWebSocketEntry(
+        socket.requestId,
+        socket.sessionId,
+        socket
+      );
+    }
+  }
+
   _webSocketCreated(params, sessionId) {
-    const key = this._cdpKey(params.requestId, sessionId);
-    this.webSockets.set(key, {
-      url: params.url,
-      frames: [],
-      transactions: [],
-      pendingGameRequests: [],
-      nextFrameId: 1
-    });
+    const meta = {
+      requestId: params.requestId,
+      sessionId:
+        sessionId || null,
+      url: params.url || ''
+    };
+
+    this._ensureWebSocketState(
+      params.requestId,
+      sessionId,
+      meta
+    );
+
+    const entry =
+      this._ensureWebSocketEntry(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    entry._webSocketLateAttach = false;
   }
 
   _webSocketHandshakeRequest(params, sessionId) {
-    const key = this._cdpKey(params.requestId, sessionId);
-    let entry = this.active.get(key);
-    if (!entry) {
-      const url = this.webSockets.get(key)?.url || '';
-      entry = {
-        pageref: 'page_1',
-        startedDateTime: new Date().toISOString(),
-        time: 0,
-        request: {
-          method: 'GET',
-          url,
-          httpVersion: '',
-          cookies: [],
-          headers: [],
-          queryString: queryString(url),
-          headersSize: -1,
-          bodySize: 0
-        },
-        response: responseTemplate(),
-        cache: {},
-        timings: timingsTemplate(),
-        __requestId: key,
-        __cdpRequestId: params.requestId,
-        __startTs: params.timestamp,
-        __responseTs: null,
-        __endTs: null,
-        __resourceType: 'WebSocket',
-        __finalized: false,
-        __source: 'cdp'
-      };
-      this.active.set(key, entry);
-    }
+    const meta = {
+      requestId:
+        params.requestId,
+      sessionId:
+        sessionId || null,
+      requestHeaders:
+        params.request?.headers || {}
+    };
+
+    const ws =
+      this._ensureWebSocketState(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    const entry =
+      this._ensureWebSocketEntry(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    entry.__startTs =
+      params.timestamp ??
+      entry.__startTs;
+
+    entry._webSocketLateAttach = false;
 
     if (params.request?.headers) {
-      entry.request.headers = headersToArray(params.request.headers);
+      entry.request.headers =
+        headersToArray(
+          params.request.headers
+        );
+
+      ws.requestHeaders =
+        params.request.headers;
     }
   }
 
   _webSocketHandshakeResponse(params, sessionId) {
-    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
-    if (!entry) return;
-    this._applyResponse(entry, params.response, params.timestamp);
+    const meta = {
+      requestId:
+        params.requestId,
+      sessionId:
+        sessionId || null,
+      responseHeaders:
+        params.response?.headers || {},
+      status:
+        params.response?.status || 0,
+      statusText:
+        params.response?.statusText || ''
+    };
+
+    const ws =
+      this._ensureWebSocketState(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    const entry =
+      this._ensureWebSocketEntry(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    ws.responseHeaders =
+      params.response?.headers || {};
+    ws.status =
+      params.response?.status || 0;
+    ws.statusText =
+      params.response?.statusText || '';
+
+    this._applyResponse(
+      entry,
+      params.response,
+      params.timestamp
+    );
   }
 
   _webSocketFrame(params, direction, sessionId) {
-    const ws =
-      this.webSockets.get(
-        this._cdpKey(
-          params.requestId,
-          sessionId
-        )
+    const meta =
+      this._webSocketMeta(
+        params.requestId,
+        sessionId
       );
 
-    if (!ws) return;
+    const ws =
+      this._ensureWebSocketState(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    const entry =
+      this._ensureWebSocketEntry(
+        params.requestId,
+        sessionId,
+        meta
+      );
+
+    if (meta?.url) {
+      entry.request.url =
+        meta.url;
+      entry.request.queryString =
+        queryString(meta.url);
+      delete entry._webSocketUnknownUrl;
+    }
 
     const payloadData =
       params.response?.payloadData || '';
@@ -1973,9 +2290,19 @@ class HarRecorder {
   }
 
   _webSocketClosed(params, sessionId) {
-    const entry = this.active.get(this._cdpKey(params.requestId, sessionId));
-    if (!entry) return;
-    entry.__endTs = params.timestamp;
+    const entry =
+      this._ensureWebSocketEntry(
+        params.requestId,
+        sessionId,
+        this._webSocketMeta(
+          params.requestId,
+          sessionId
+        )
+      );
+
+    entry.__endTs =
+      params.timestamp;
+
     this._finalize(entry);
   }
 

@@ -128,31 +128,6 @@ function parseWebSocketText(text) {
     return result;
   } catch {}
 
-  // Some game protocols prepend a short transport/session marker before an
-  // otherwise normal JSON payload (for example "A/u2{...}"). Preserve the
-  // prefix and decode the JSON without provider-specific hardcoding.
-  const objectStart = trimmed.indexOf('{');
-  const arrayStart = trimmed.indexOf('[');
-  const jsonStart =
-    objectStart < 0
-      ? arrayStart
-      : arrayStart < 0
-        ? objectStart
-        : Math.min(objectStart, arrayStart);
-
-  if (jsonStart > 0 && jsonStart <= 32) {
-    try {
-      const parsed =
-        JSON.parse(trimmed.slice(jsonStart));
-
-      result.format = 'prefixed-json';
-      result.prefix =
-        trimmed.slice(0, jsonStart);
-      result.parsed = parsed;
-      return result;
-    } catch {}
-  }
-
   // Socket.IO EVENT packet: 42["event", {...}]
   if (trimmed.startsWith('42')) {
     try {
@@ -188,6 +163,31 @@ function parseWebSocketText(text) {
       result.packetType = trimmed[0];
       result.parsed =
         JSON.parse(trimmed.slice(1));
+      return result;
+    } catch {}
+  }
+
+  // Some game protocols prepend a short transport/session marker before an
+  // otherwise normal JSON payload (for example "A/u2{...}"). Preserve the
+  // prefix and decode the JSON without provider-specific hardcoding.
+  const objectStart = trimmed.indexOf('{');
+  const arrayStart = trimmed.indexOf('[');
+  const jsonStart =
+    objectStart < 0
+      ? arrayStart
+      : arrayStart < 0
+        ? objectStart
+        : Math.min(objectStart, arrayStart);
+
+  if (jsonStart > 0 && jsonStart <= 32) {
+    try {
+      const parsed =
+        JSON.parse(trimmed.slice(jsonStart));
+
+      result.format = 'prefixed-json';
+      result.prefix =
+        trimmed.slice(0, jsonStart);
+      result.parsed = parsed;
       return result;
     } catch {}
   }

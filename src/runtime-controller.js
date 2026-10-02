@@ -9,6 +9,7 @@ class RuntimeController {
     this.onUpdate = onUpdate;
     this.sessions = new Set();
     this.scriptIds = new Map();
+    this.webSockets = new Map();
     this.started = false;
     this.attachedDebugger = false;
     this.lastAppliedTargets = 0;
@@ -22,6 +23,59 @@ class RuntimeController {
 
   getSessionIds() {
     return [...this.sessions];
+  }
+
+  getWebSocketSnapshot() {
+    return [...this.webSockets.values()]
+      .map((socket) => ({
+        ...socket,
+        requestHeaders: {
+          ...(socket.requestHeaders || {})
+        },
+        responseHeaders: {
+          ...(socket.responseHeaders || {})
+        }
+      }));
+  }
+
+  _sendCommand(method, params = {}, sessionId) {
+    const dbg = this._debugger();
+    if (!dbg) {
+      return Promise.reject(
+        new Error('Debugger unavailable')
+      );
+    }
+
+    if (
+      sessionId === undefined ||
+      sessionId === null ||
+      sessionId === ''
+    ) {
+      return dbg.sendCommand(
+        method,
+        params
+      );
+    }
+
+    return dbg.sendCommand(
+      method,
+      params,
+      sessionId
+    );
+  }
+
+  _wsKey(requestId, sessionId) {
+    return `${sessionId || 'root'}:${requestId}`;
+  }
+
+  async _enableNetwork(sessionId) {
+    try {
+      await this._sendCommand(
+        'Network.enable',
+        {},
+        sessionId
+      );
+    } catch {}
   }
 
   _state() {
@@ -77,6 +131,7 @@ class RuntimeController {
       dbg.on('message', this._messageListener);
 
       await this._installInSession(null);
+      await this._enableNetwork(null);
 
       await dbg.sendCommand('Target.setAutoAttach', {
         autoAttach: true,
@@ -104,6 +159,7 @@ class RuntimeController {
     // Do not detach here. HarRecorder may share this debugger connection.
     this.sessions.clear();
     this.scriptIds.clear();
+    this.webSockets.clear();
   }
 
   async refresh() {
@@ -122,8 +178,135 @@ class RuntimeController {
     return applied;
   }
 
-  async _onMessage(method, params) {
+  async _onMessage(method, params, sessionId) {
     if (!this.started) return;
+
+    if (method === 'Network.webSocketCreated') {
+      const key =
+        this._wsKey(
+          params?.requestId,
+          sessionId
+        );
+
+      this.webSockets.set(key, {
+        key,
+        requestId: params?.requestId,
+        sessionId:
+          sessionId || null,
+        url: params?.url || '',
+        createdAt:
+          params?.timestamp ?? null,
+        requestHeaders: {},
+        responseHeaders: {},
+        status: 0,
+        statusText: '',
+        closed: false
+      });
+
+      return;
+    }
+
+    if (
+      method ===
+        'Network.webSocketWillSendHandshakeRequest'
+    ) {
+      const key =
+        this._wsKey(
+          params?.requestId,
+          sessionId
+        );
+
+      const socket =
+        this.webSockets.get(key) || {
+          key,
+          requestId: params?.requestId,
+          sessionId:
+            sessionId || null,
+          url: '',
+          createdAt:
+            params?.timestamp ?? null,
+          requestHeaders: {},
+          responseHeaders: {},
+          status: 0,
+          statusText: '',
+          closed: false
+        };
+
+      socket.requestHeaders =
+        params?.request?.headers || {};
+
+      this.webSockets.set(
+        key,
+        socket
+      );
+
+      return;
+    }
+
+    if (
+      method ===
+        'Network.webSocketHandshakeResponseReceived'
+    ) {
+      const key =
+        this._wsKey(
+          params?.requestId,
+          sessionId
+        );
+
+      const socket =
+        this.webSockets.get(key) || {
+          key,
+          requestId: params?.requestId,
+          sessionId:
+            sessionId || null,
+          url: '',
+          createdAt:
+            params?.timestamp ?? null,
+          requestHeaders: {},
+          responseHeaders: {},
+          status: 0,
+          statusText: '',
+          closed: false
+        };
+
+      socket.responseHeaders =
+        params?.response?.headers || {};
+
+      socket.status =
+        params?.response?.status || 0;
+
+      socket.statusText =
+        params?.response?.statusText || '';
+
+      this.webSockets.set(
+        key,
+        socket
+      );
+
+      return;
+    }
+
+    if (
+      method ===
+        'Network.webSocketClosed'
+    ) {
+      const key =
+        this._wsKey(
+          params?.requestId,
+          sessionId
+        );
+
+      const socket =
+        this.webSockets.get(key);
+
+      if (socket) {
+        socket.closed = true;
+        socket.closedAt =
+          params?.timestamp ?? null;
+      }
+
+      return;
+    }
 
     if (method === 'Target.attachedToTarget') {
       const childSessionId = params?.sessionId;
@@ -141,6 +324,7 @@ class RuntimeController {
       }, childSessionId).catch(() => {});
 
       await this._installInSession(childSessionId);
+      await this._enableNetwork(childSessionId);
       this.onUpdate();
       return;
     }
@@ -165,10 +349,10 @@ class RuntimeController {
     if (replaceExisting) {
       const previousId = this.scriptIds.get(key);
       if (previousId) {
-        await dbg.sendCommand(
+        await this._sendCommand(
           'Page.removeScriptToEvaluateOnNewDocument',
           { identifier: previousId },
-          sessionId || undefined
+          sessionId
         ).catch(() => {});
         this.scriptIds.delete(key);
       }
@@ -177,13 +361,13 @@ class RuntimeController {
     let installed = false;
 
     try {
-      const result = await dbg.sendCommand(
+      const result = await this._sendCommand(
         'Page.addScriptToEvaluateOnNewDocument',
         {
           source,
           runImmediately: true
         },
-        sessionId || undefined
+        sessionId
       );
 
       if (result?.identifier) this.scriptIds.set(key, result.identifier);
@@ -193,14 +377,14 @@ class RuntimeController {
     }
 
     try {
-      await dbg.sendCommand(
+      await this._sendCommand(
         'Runtime.evaluate',
         {
           expression: source,
           silent: true,
           allowUnsafeEvalBlockedByCSP: true
         },
-        sessionId || undefined
+        sessionId
       );
       installed = true;
     } catch {

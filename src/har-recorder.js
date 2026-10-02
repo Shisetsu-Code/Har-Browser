@@ -90,6 +90,385 @@ function bodyCaptureLimit(entry, gameOnly, maxBodyBytes, maxProtocolBodyBytes) {
   return maxBodyBytes;
 }
 
+function bufferLooksText(buffer) {
+  if (!Buffer.isBuffer(buffer)) return false;
+  if (buffer.length === 0) return true;
+
+  let printable = 0;
+
+  for (const byte of buffer) {
+    if (
+      byte === 9 ||
+      byte === 10 ||
+      byte === 13 ||
+      (byte >= 32 && byte <= 126) ||
+      byte >= 0xC2
+    ) {
+      printable += 1;
+    }
+  }
+
+  return printable / buffer.length >= 0.85;
+}
+
+function parseWebSocketText(text) {
+  const raw = String(text ?? '');
+  const trimmed = raw.trim();
+
+  const result = {
+    format: 'text',
+    text: raw
+  };
+
+  if (!trimmed) return result;
+
+  try {
+    result.format = 'json';
+    result.parsed = JSON.parse(trimmed);
+    return result;
+  } catch {}
+
+  // Socket.IO EVENT packet: 42["event", {...}]
+  if (trimmed.startsWith('42')) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(2));
+
+      result.format = 'socket.io';
+      result.protocol = 'socket.io';
+      result.packetType = 'event';
+      result.parsed = parsed;
+
+      if (
+        Array.isArray(parsed) &&
+        typeof parsed[0] === 'string'
+      ) {
+        result.eventName = parsed[0];
+        result.eventData =
+          parsed.length > 2
+            ? parsed.slice(1)
+            : parsed[1];
+      }
+
+      return result;
+    } catch {}
+  }
+
+  // Engine.IO packets may prefix a JSON payload with a one-byte packet type.
+  if (
+    /^[0-6][\[{]/.test(trimmed)
+  ) {
+    try {
+      result.format = 'engine.io';
+      result.protocol = 'engine.io';
+      result.packetType = trimmed[0];
+      result.parsed =
+        JSON.parse(trimmed.slice(1));
+      return result;
+    } catch {}
+  }
+
+  if (
+    trimmed.includes('=') &&
+    (trimmed.includes('&') || /^[^=\s]+=[^\s]*$/.test(trimmed))
+  ) {
+    try {
+      const params =
+        new URLSearchParams(trimmed);
+
+      const parsed = {};
+
+      for (const [key, value] of params.entries()) {
+        if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+          parsed[key] =
+            Array.isArray(parsed[key])
+              ? [...parsed[key], value]
+              : [parsed[key], value];
+        } else {
+          parsed[key] = value;
+        }
+      }
+
+      if (Object.keys(parsed).length) {
+        result.format = 'querystring';
+        result.parsed = parsed;
+      }
+    } catch {}
+  }
+
+  return result;
+}
+
+function decodeWebSocketPayload(payloadData, opcode) {
+  const payload = String(payloadData ?? '');
+  const numericOpcode = Number(opcode);
+
+  if (numericOpcode === 2) {
+    let bytes;
+
+    try {
+      bytes = Buffer.from(payload, 'base64');
+    } catch {
+      bytes = Buffer.alloc(0);
+    }
+
+    if (bufferLooksText(bytes)) {
+      const decoded =
+        parseWebSocketText(
+          bytes.toString('utf8')
+        );
+
+      return {
+        ...decoded,
+        opcodeName: 'binary',
+        encoding: 'base64->utf8',
+        byteLength: bytes.length,
+        base64: payload
+      };
+    }
+
+    return {
+      format: 'binary',
+      opcodeName: 'binary',
+      encoding: 'base64',
+      byteLength: bytes.length,
+      base64: payload
+    };
+  }
+
+  const decoded =
+    parseWebSocketText(payload);
+
+  return {
+    ...decoded,
+    opcodeName:
+      numericOpcode === 1
+        ? 'text'
+        : numericOpcode === 8
+          ? 'close'
+          : numericOpcode === 9
+            ? 'ping'
+            : numericOpcode === 10
+              ? 'pong'
+              : 'other',
+    encoding: 'utf8',
+    byteLength: utf8Size(payload)
+  };
+}
+
+function collectSemanticTokens(value, out = [], depth = 0) {
+  if (depth > 5 || out.length > 250) return out;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectSemanticTokens(item, out, depth + 1);
+    }
+    return out;
+  }
+
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      out.push(String(key).toLowerCase());
+      collectSemanticTokens(child, out, depth + 1);
+    }
+    return out;
+  }
+
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number'
+  ) {
+    out.push(String(value).toLowerCase());
+  }
+
+  return out;
+}
+
+function extractWebSocketCorrelation(decoded) {
+  const preferredKeys = new Set([
+    'requestid',
+    'request_id',
+    'correlationid',
+    'correlation_id',
+    'rid',
+    'seq',
+    'sequence',
+    'transactionid',
+    'transaction_id',
+    'txid',
+    'spinid',
+    'spin_id',
+    'roundid',
+    'round_id',
+    'messageid',
+    'message_id',
+    'msgid'
+  ]);
+
+  function walk(value, depth = 0) {
+    if (depth > 4 || value === null || value === undefined) return null;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    if (typeof value !== 'object') return null;
+
+    for (const [key, child] of Object.entries(value)) {
+      const normalized = String(key).toLowerCase();
+
+      if (
+        preferredKeys.has(normalized) &&
+        (typeof child === 'string' || typeof child === 'number')
+      ) {
+        return {
+          key,
+          value: String(child)
+        };
+      }
+    }
+
+    // A top-level generic id is useful, but avoid recursively treating every
+    // symbol/object id inside a game result as a correlation id.
+    if (
+      depth === 0 &&
+      Object.prototype.hasOwnProperty.call(value, 'id') &&
+      (
+        typeof value.id === 'string' ||
+        typeof value.id === 'number'
+      )
+    ) {
+      return {
+        key: 'id',
+        value: String(value.id)
+      };
+    }
+
+    for (const child of Object.values(value)) {
+      const found = walk(child, depth + 1);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  return walk(decoded?.parsed);
+}
+
+function classifyWebSocketGameEvent(decoded, direction) {
+  if (!decoded) return null;
+
+  const opcodeName =
+    String(decoded.opcodeName || '').toLowerCase();
+
+  if (
+    ['ping', 'pong', 'close'].includes(opcodeName) ||
+    decoded.text === '2' ||
+    decoded.text === '3'
+  ) {
+    return {
+      kind: 'heartbeat',
+      direction,
+      hints: []
+    };
+  }
+
+  const tokens = [];
+
+  if (decoded.eventName) {
+    tokens.push(
+      String(decoded.eventName).toLowerCase()
+    );
+  }
+
+  collectSemanticTokens(
+    decoded.parsed,
+    tokens
+  );
+
+  if (
+    decoded.format === 'text' &&
+    decoded.text &&
+    decoded.text.length <= 256
+  ) {
+    tokens.push(
+      decoded.text.toLowerCase()
+    );
+  }
+
+  const haystack =
+    tokens.join(' ');
+
+  const patterns = [
+    {
+      kind: 'buy-feature',
+      regex: /\b(?:buy|purchase)[ _-]?(?:feature|bonus)|\bbonus[ _-]?buy\b|\bfeature[ _-]?buy\b/
+    },
+    {
+      kind: 'free-spin',
+      regex: /\bfree[ _-]?spins?\b|\bfreespins?\b/
+    },
+    {
+      kind: 'spin',
+      regex: /\bspins?\b/
+    },
+    {
+      kind: 'bet',
+      regex: /\bbet\b|\bwager\b|\bstake\b/
+    },
+    {
+      kind: 'bonus',
+      regex: /\bbonus\b|\bfeature\b/
+    },
+    {
+      kind: 'round',
+      regex: /\bround\b/
+    }
+  ];
+
+  for (const candidate of patterns) {
+    if (!candidate.regex.test(haystack)) continue;
+
+    const hints =
+      tokens
+        .filter((token) =>
+          candidate.regex.test(token)
+        )
+        .slice(0, 8);
+
+    const correlation =
+      extractWebSocketCorrelation(decoded);
+
+    return {
+      kind: candidate.kind,
+      direction,
+      hints,
+      correlationId:
+        correlation?.value,
+      correlationKey:
+        correlation?.key
+    };
+  }
+
+  return null;
+}
+
+function isStructuredWebSocketPayload(decoded) {
+  return Boolean(
+    decoded &&
+    (
+      decoded.parsed !== undefined ||
+      decoded.format === 'json' ||
+      decoded.format === 'socket.io' ||
+      decoded.format === 'engine.io' ||
+      decoded.format === 'querystring'
+    )
+  );
+}
+
 function entryTrafficBytes(entry) {
   const responseBytes = Number(entry?.response?.bodySize);
   const requestBytes = Number(entry?.request?.bodySize);
@@ -263,6 +642,9 @@ class HarRecorder {
 
     this.totalBytes = 0;
     this.wsFrames = 0;
+    this.wsGameEvents = 0;
+    this.wsSpins = 0;
+    this.wsTransactions = 0;
     this.webEvents = 0;
     this.cdpEvents = 0;
     this.cdpAvailable = false;
@@ -497,6 +879,9 @@ class HarRecorder {
         ? visibleCandidates.reduce((sum, entry) => sum + entryTrafficBytes(entry), 0)
         : this.totalBytes,
       wsFrames: this.wsFrames,
+      wsGameEvents: this.wsGameEvents,
+      wsSpins: this.wsSpins,
+      wsTransactions: this.wsTransactions,
       webEvents: this.webEvents,
       cdpEvents: this.cdpEvents,
       cdpAvailable: this.cdpAvailable,
@@ -1332,7 +1717,10 @@ class HarRecorder {
     const key = this._cdpKey(params.requestId, sessionId);
     this.webSockets.set(key, {
       url: params.url,
-      frames: []
+      frames: [],
+      transactions: [],
+      pendingGameRequests: [],
+      nextFrameId: 1
     });
   }
 
@@ -1382,19 +1770,200 @@ class HarRecorder {
   }
 
   _webSocketFrame(params, direction, sessionId) {
-    const ws = this.webSockets.get(this._cdpKey(params.requestId, sessionId));
+    const ws =
+      this.webSockets.get(
+        this._cdpKey(
+          params.requestId,
+          sessionId
+        )
+      );
+
     if (!ws) return;
 
-    const payloadData = params.response?.payloadData || '';
-    ws.frames.push({
+    const payloadData =
+      params.response?.payloadData || '';
+
+    const opcode =
+      params.response?.opcode;
+
+    const decoded =
+      decodeWebSocketPayload(
+        payloadData,
+        opcode
+      );
+
+    const gameEvent =
+      classifyWebSocketGameEvent(
+        decoded,
+        direction
+      );
+
+    const frame = {
+      id: ws.nextFrameId++,
       direction,
       timestamp: params.timestamp,
-      opcode: params.response?.opcode,
+      opcode,
       mask: params.response?.mask,
-      payloadData
-    });
+      size: decoded.byteLength,
+      payloadData,
+      decoded
+    };
+
+    if (gameEvent) {
+      frame._gameEvent = gameEvent;
+      this.wsGameEvents += 1;
+
+      if (
+        direction === 'sent' &&
+        ['spin', 'free-spin'].includes(
+          gameEvent.kind
+        )
+      ) {
+        this.wsSpins += 1;
+      }
+    }
+
+    ws.frames.push(frame);
+
+    if (
+      direction === 'sent' &&
+      gameEvent &&
+      gameEvent.kind !== 'heartbeat'
+    ) {
+      ws.pendingGameRequests.push({
+        frameId: frame.id,
+        timestamp: frame.timestamp,
+        kind: gameEvent.kind,
+        correlationId:
+          gameEvent.correlationId || null
+      });
+
+      if (
+        ws.pendingGameRequests.length > 100
+      ) {
+        ws.pendingGameRequests.splice(
+          0,
+          ws.pendingGameRequests.length - 100
+        );
+      }
+    }
+
+    if (
+      direction === 'received' &&
+      gameEvent?.kind !== 'heartbeat' &&
+      (
+        gameEvent ||
+        isStructuredWebSocketPayload(decoded)
+      )
+    ) {
+      let matchIndex = -1;
+      let matchType = '';
+
+      if (gameEvent?.correlationId) {
+        matchIndex =
+          ws.pendingGameRequests.findIndex(
+            (pending) =>
+              pending.correlationId &&
+              pending.correlationId ===
+                gameEvent.correlationId
+          );
+
+        if (matchIndex >= 0) {
+          matchType = 'correlation-id';
+        }
+      }
+
+      if (matchIndex < 0) {
+        for (
+          let index =
+            ws.pendingGameRequests.length - 1;
+          index >= 0;
+          index -= 1
+        ) {
+          const pending =
+            ws.pendingGameRequests[index];
+
+          const deltaMs =
+            (
+              Number(frame.timestamp) -
+              Number(pending.timestamp)
+            ) * 1000;
+
+          if (
+            Number.isFinite(deltaMs) &&
+            deltaMs >= 0 &&
+            deltaMs <= 30000
+          ) {
+            matchIndex = index;
+            matchType = 'nearest-response';
+            break;
+          }
+        }
+      }
+
+      if (matchIndex >= 0) {
+        const [pending] =
+          ws.pendingGameRequests.splice(
+            matchIndex,
+            1
+          );
+
+        const latencyMs =
+          (
+            Number(frame.timestamp) -
+            Number(pending.timestamp)
+          ) * 1000;
+
+        const transaction = {
+          kind: pending.kind,
+          requestFrameId:
+            pending.frameId,
+          responseFrameId:
+            frame.id,
+          requestTimestamp:
+            pending.timestamp,
+          responseTimestamp:
+            frame.timestamp,
+          latencyMs:
+            Number.isFinite(latencyMs)
+              ? Math.max(0, latencyMs)
+              : null,
+          match: matchType
+        };
+
+        if (pending.correlationId) {
+          transaction.correlationId =
+            pending.correlationId;
+        }
+
+        ws.transactions.push(
+          transaction
+        );
+
+        const requestFrame =
+          ws.frames.find(
+            (candidate) =>
+              candidate.id ===
+              pending.frameId
+          );
+
+        if (requestFrame) {
+          requestFrame._pairedWith =
+            frame.id;
+        }
+
+        frame._pairedWith =
+          pending.frameId;
+
+        this.wsTransactions += 1;
+      }
+    }
+
     this.wsFrames += 1;
-    this.totalBytes += utf8Size(payloadData);
+    this.totalBytes +=
+      Number(decoded.byteLength) ||
+      utf8Size(payloadData);
+
     this.onUpdate();
   }
 
@@ -1419,7 +1988,44 @@ class HarRecorder {
     }
 
     const ws = this.webSockets.get(entry.__requestId);
-    if (ws?.frames?.length) entry._webSocketFrames = ws.frames;
+
+    if (ws?.frames?.length) {
+      entry._webSocketFrames =
+        ws.frames;
+
+      entry._webSocketSummary = {
+        url: ws.url,
+        frames: ws.frames.length,
+        sent: ws.frames.filter(
+          (frame) =>
+            frame.direction === 'sent'
+        ).length,
+        received: ws.frames.filter(
+          (frame) =>
+            frame.direction === 'received'
+        ).length,
+        gameEvents: ws.frames.filter(
+          (frame) =>
+            frame._gameEvent &&
+            frame._gameEvent.kind !==
+              'heartbeat'
+        ).length,
+        spinRequests: ws.frames.filter(
+          (frame) =>
+            frame.direction === 'sent' &&
+            ['spin', 'free-spin'].includes(
+              frame._gameEvent?.kind
+            )
+        ).length,
+        transactions:
+          ws.transactions.length
+      };
+
+      if (ws.transactions.length) {
+        entry._webSocketTransactions =
+          ws.transactions;
+      }
+    }
 
     if (this.active.get(entry.__requestId) === entry) {
       this.active.delete(entry.__requestId);
@@ -1441,5 +2047,10 @@ module.exports = {
   isGameOnlyEntry,
   isBodylessResponse,
   bodyCaptureLimit,
-  mergeEntry
+  mergeEntry,
+  parseWebSocketText,
+  decodeWebSocketPayload,
+  extractWebSocketCorrelation,
+  classifyWebSocketGameEvent,
+  isStructuredWebSocketPayload
 };
